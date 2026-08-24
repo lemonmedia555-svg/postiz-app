@@ -16,6 +16,7 @@ import FormDataNew from 'form-data';
 import mime from 'mime-types';
 import { Integration } from '@prisma/client';
 import { hasExtension } from '@gitroom/helpers/utils/has.extension';
+import { resolve, sep } from 'path';
 
 const VK_API_VERSION = '5.251';
 const VK_REQUIRED_PERMISSIONS = {
@@ -414,6 +415,44 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
     };
   }
 
+  private getReadableMediaPath(mediaPath: string) {
+    const uploadRoot = resolve(process.env.UPLOAD_DIRECTORY || '/uploads');
+
+    if (mediaPath.startsWith('uploads/')) {
+      const localPath = resolve(uploadRoot, mediaPath.slice('uploads/'.length));
+      return localPath.startsWith(`${uploadRoot}${sep}`)
+        ? localPath
+        : mediaPath;
+    }
+
+    if (!mediaPath.startsWith('http') || !process.env.FRONTEND_URL) {
+      return mediaPath;
+    }
+
+    try {
+      const mediaUrl = new URL(mediaPath);
+      const frontendUrl = new URL(process.env.FRONTEND_URL);
+
+      if (
+        mediaUrl.origin !== frontendUrl.origin ||
+        !mediaUrl.pathname.startsWith('/uploads/')
+      ) {
+        return mediaPath;
+      }
+
+      const relativePath = decodeURIComponent(
+        mediaUrl.pathname.slice('/uploads/'.length)
+      );
+      const localPath = resolve(uploadRoot, relativePath);
+
+      return localPath.startsWith(`${uploadRoot}${sep}`)
+        ? localPath
+        : mediaPath;
+    } catch {
+      return mediaPath;
+    }
+  }
+
   private async uploadMedia(
     ownerId: string,
     accessToken: string,
@@ -445,7 +484,11 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
             );
 
         const filename = media.path.split('/').at(-1) || 'media';
-        const fileSize = await this.mediaSize(media.path, this.identifier);
+        const readableMediaPath = this.getReadableMediaPath(media.path);
+        const fileSize = await this.mediaSize(
+          readableMediaPath,
+          this.identifier
+        );
 
         const uploadResponse = await this.runStreamedUpload(async () => {
           // A retry needs a fresh stream because an already-read stream cannot
@@ -453,7 +496,7 @@ export class VkProvider extends SocialAbstract implements SocialProvider {
           const formData = new FormDataNew();
           formData.append(
             isVideo ? 'video_file' : 'photo',
-            await this.mediaStream(media.path, this.identifier),
+            await this.mediaStream(readableMediaPath, this.identifier),
             {
               filename,
               contentType: mime.lookup(filename) || undefined,
