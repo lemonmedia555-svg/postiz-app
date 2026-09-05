@@ -3,6 +3,8 @@ import {
   Body,
   Controller,
   Get,
+  HttpCode,
+  HttpStatus,
   NotFoundException,
   Param,
   Post,
@@ -172,6 +174,7 @@ export class PublicController {
   }
 
   @Post('/meta/instagram/deauthorize')
+  @HttpCode(HttpStatus.OK)
   async deauthorizeInstagram(@Body('signed_request') signedRequest: string) {
     const { userId } = this.verifyInstagramRequest(signedRequest);
     await this._integrationService.eraseInstagramStandaloneData(userId);
@@ -179,6 +182,7 @@ export class PublicController {
   }
 
   @Post('/meta/instagram/data-deletion')
+  @HttpCode(HttpStatus.OK)
   async deleteInstagramData(@Body('signed_request') signedRequest: string) {
     const { userId } = this.verifyInstagramRequest(signedRequest);
     await this._integrationService.eraseInstagramStandaloneData(userId, true);
