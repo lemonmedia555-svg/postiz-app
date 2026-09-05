@@ -191,6 +191,13 @@ export class IntegrationService {
     await this.informAboutRefreshError(orgId, integration, err);
   }
 
+  eraseInstagramStandaloneData(internalId: string, erasePosts = false) {
+    return this._integrationRepository.eraseInstagramStandaloneData(
+      internalId,
+      erasePosts
+    );
+  }
+
   // A reconnect that came back from a different provider (MIGRATE_PROVIDERS):
   // match the disconnected channel by profile and move it to the new provider
   // in place, so scheduled posts, settings and customers survive. Throws the

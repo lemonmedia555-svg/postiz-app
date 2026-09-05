@@ -211,6 +211,57 @@ export class IntegrationRepository {
     });
   }
 
+  async eraseInstagramStandaloneData(internalId: string, erasePosts = false) {
+    const hashedInternalId = createHash('md5').update(internalId).digest('hex');
+    const integrations = await this._integration.model.integration.findMany({
+      where: {
+        providerIdentifier: 'instagram-standalone',
+        OR: [
+          {
+            internalId: {
+              in: [internalId, `deauthorized_${hashedInternalId}`],
+            },
+          },
+          { rootInternalId: { in: [internalId, hashedInternalId] } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    const deletedAt = new Date();
+    for (const integration of integrations) {
+      if (erasePosts) {
+        await this._posts.model.post.updateMany({
+          where: { integrationId: integration.id, deletedAt: null },
+          data: { deletedAt },
+        });
+      }
+
+      await this._integration.model.integration.update({
+        where: { id: integration.id },
+        data: {
+          name: 'Deleted Instagram account',
+          internalId: erasePosts
+            ? `deleted_${makeId(24)}`
+            : `deauthorized_${hashedInternalId}_${makeId(6)}`,
+          rootInternalId: erasePosts ? null : hashedInternalId,
+          token: '',
+          refreshToken: null,
+          tokenExpiration: null,
+          profile: null,
+          picture: null,
+          customInstanceDetails: null,
+          additionalSettings: '[]',
+          disabled: true,
+          refreshNeeded: false,
+          deletedAt,
+        },
+      });
+    }
+
+    return integrations.length;
+  }
+
   getIntegrationByInternalId(org: string, internalId: string) {
     return this._integration.model.integration.findFirst({
       where: {

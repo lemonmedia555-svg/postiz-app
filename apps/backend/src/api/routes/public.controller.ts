@@ -1,7 +1,9 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
+  NotFoundException,
   Param,
   Post,
   Query,
@@ -27,6 +29,9 @@ import { promisify } from 'util';
 import { OnlyURL } from '@gitroom/nestjs-libraries/dtos/webhooks/webhooks.dto';
 import { isSafePublicHttpsUrl } from '@gitroom/nestjs-libraries/dtos/webhooks/webhook.url.validator';
 import { ssrfSafeDispatcher } from '@gitroom/nestjs-libraries/dtos/webhooks/ssrf.safe.dispatcher';
+import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
+import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { verifyMetaInstagramSignedRequest } from '@gitroom/backend/api/routes/meta.instagram.callback';
 
 const pump = promisify(pipeline);
 
@@ -37,7 +42,8 @@ export class PublicController {
     private _trackService: TrackService,
     private _agentGraphInsertService: AgentGraphInsertService,
     private _postsService: PostsService,
-    private _subscriptionService: SubscriptionService
+    private _subscriptionService: SubscriptionService,
+    private _integrationService: IntegrationService
   ) {}
   @Post('/agent')
   async createAgent(@Body() body: { text: string; apiKey: string }) {
@@ -154,6 +160,58 @@ export class PublicController {
     }
   }
 
+  private verifyInstagramRequest(signedRequest: string) {
+    try {
+      return verifyMetaInstagramSignedRequest(
+        signedRequest,
+        process.env.INSTAGRAM_APP_SECRET || ''
+      );
+    } catch {
+      throw new BadRequestException('Invalid Instagram signed request');
+    }
+  }
+
+  @Post('/meta/instagram/deauthorize')
+  async deauthorizeInstagram(@Body('signed_request') signedRequest: string) {
+    const { userId } = this.verifyInstagramRequest(signedRequest);
+    await this._integrationService.eraseInstagramStandaloneData(userId);
+    return { success: true };
+  }
+
+  @Post('/meta/instagram/data-deletion')
+  async deleteInstagramData(@Body('signed_request') signedRequest: string) {
+    const { userId } = this.verifyInstagramRequest(signedRequest);
+    await this._integrationService.eraseInstagramStandaloneData(userId, true);
+
+    const confirmationCode = makeId(32);
+    await ioRedis.set(
+      `instagram-data-deletion:${confirmationCode}`,
+      'completed',
+      'EX',
+      60 * 60 * 24 * 30
+    );
+
+    return {
+      url: `${process.env.FRONTEND_URL}/api/public/meta/instagram/data-deletion/${confirmationCode}`,
+      confirmation_code: confirmationCode,
+    };
+  }
+
+  @Get('/meta/instagram/data-deletion/:confirmationCode')
+  async getInstagramDeletionStatus(
+    @Param('confirmationCode') confirmationCode: string
+  ) {
+    if (!/^[A-Za-z0-9_-]{32}$/.test(confirmationCode)) {
+      throw new NotFoundException('Deletion request not found');
+    }
+    const status = await ioRedis.get(
+      `instagram-data-deletion:${confirmationCode}`
+    );
+    if (!status) {
+      throw new NotFoundException('Deletion request not found');
+    }
+    return { status };
+  }
 
   @Get('/stream')
   async streamFile(
