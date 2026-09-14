@@ -1252,3 +1252,4 @@ export class InstagramProvider
     }
   }
 }
+import { providerFetch as fetch } from '../provider.authorization';

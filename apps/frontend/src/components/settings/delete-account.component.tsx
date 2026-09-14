@@ -21,8 +21,8 @@ const DeleteAccountComponent: FC<{ isLink?: boolean }> = ({ isLink }) => {
     if (
       !(await deleteDialog(
         t(
-          'delete_account_confirm',
-          'Your account, organizations, channels and posts will be deleted. This action cannot be undone, are you sure?'
+          'confirm_account_local_removal',
+          'Close your account and stop channel access in Creatu? Published social posts stay online. Revoke permissions separately in each social network. Full data erasure, including files and backups, requires support review.'
         ),
         t('yes_delete_my_account', 'Yes, delete my account')
       ))
@@ -98,8 +98,8 @@ const DeleteAccountComponent: FC<{ isLink?: boolean }> = ({ isLink }) => {
           </div>
           <div className="text-[12px] text-textItemBlur">
             {t(
-              'delete_account_description',
-              'Your account, organizations and channels will be deleted permanently'
+              'delete_account_removal_description',
+              'This closes your account and stops channel access in Creatu. Revoke permissions separately in each social network. Full data erasure, including files and backups, requires support review.'
             )}
           </div>
         </div>

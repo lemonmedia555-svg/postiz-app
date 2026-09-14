@@ -109,16 +109,6 @@ export class EnterpriseController {
         return { success: false };
       }
 
-      const isTherePosts = await this._integrationService.getPostsForChannel(
-        org.id,
-        load.id
-      );
-      if (isTherePosts.length) {
-        for (const post of isTherePosts) {
-          this._postsService.deletePost(org.id, post.group).catch(() => {});
-        }
-      }
-
       await this._integrationService.deleteChannel(org.id, load.id);
       return { success: true };
     } catch (err) {

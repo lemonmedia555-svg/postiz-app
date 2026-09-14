@@ -173,23 +173,16 @@ export class PublicController {
 
   @Post('/meta/instagram/deauthorize')
   async deauthorizeInstagram(@Body('signed_request') signedRequest: string) {
-    const { userId } = this.verifyInstagramRequest(signedRequest);
-    await this._integrationService.eraseInstagramStandaloneData(userId);
+    const { userId, issuedAt } = this.verifyInstagramRequest(signedRequest);
+    await this._integrationService.eraseInstagramStandaloneData(userId, false, issuedAt);
     return { success: true };
   }
 
   @Post('/meta/instagram/data-deletion')
   async deleteInstagramData(@Body('signed_request') signedRequest: string) {
-    const { userId } = this.verifyInstagramRequest(signedRequest);
-    await this._integrationService.eraseInstagramStandaloneData(userId, true);
-
-    const confirmationCode = makeId(32);
-    await ioRedis.set(
-      `instagram-data-deletion:${confirmationCode}`,
-      'completed',
-      'EX',
-      60 * 60 * 24 * 30
-    );
+    const { userId, issuedAt } = this.verifyInstagramRequest(signedRequest);
+    const request = await this._integrationService.eraseInstagramStandaloneData(userId, true, issuedAt);
+    const confirmationCode = request.id;
 
     return {
       url: `${process.env.FRONTEND_URL}/api/public/meta/instagram/data-deletion/${confirmationCode}`,
@@ -204,13 +197,19 @@ export class PublicController {
     if (!/^[A-Za-z0-9_-]{32}$/.test(confirmationCode)) {
       throw new NotFoundException('Deletion request not found');
     }
-    const status = await ioRedis.get(
-      `instagram-data-deletion:${confirmationCode}`
-    );
-    if (!status) {
+    const request = await this._integrationService.getRemovalStatus(confirmationCode);
+    if (!request) {
+      if (await ioRedis.get(`instagram-data-deletion:${confirmationCode}`)) {
+        return { status: 'legacy_request_requires_review' };
+      }
       throw new NotFoundException('Deletion request not found');
     }
-    return { status };
+    return { status: request.status, received_at: request.createdAt,
+      description: request.status === 'active_data_deleted_pending_review'
+        ? 'Active channel data cleared. Historic job history, backups and residual files require operator review; full erasure is not yet confirmed.'
+        : request.status === 'disconnected'
+        ? 'Channel disconnected in Creatu. Provider permission revocation is separate; full erasure requires operator review.'
+        : 'Request received. Channel access has stopped; cleanup is pending.' };
   }
 
   @Get('/stream')

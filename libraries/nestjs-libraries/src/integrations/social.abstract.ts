@@ -1,4 +1,5 @@
 import { timer } from '@gitroom/helpers/utils/timer';
+import { providerFetch as fetch } from './provider.authorization';
 import { Integration } from '@prisma/client';
 import {
   AuthTokenDetails,

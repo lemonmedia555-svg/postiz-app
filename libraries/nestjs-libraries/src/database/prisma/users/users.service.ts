@@ -6,6 +6,7 @@ import { EmailNotificationsDto } from '@gitroom/nestjs-libraries/dtos/users/emai
 import { OrganizationRepository } from '@gitroom/nestjs-libraries/database/prisma/organizations/organization.repository';
 import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { NotificationService } from '@gitroom/nestjs-libraries/database/prisma/notifications/notification.service';
+import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
 
 @Injectable()
 export class UsersService {
@@ -13,7 +14,8 @@ export class UsersService {
     private _usersRepository: UsersRepository,
     private _organizationRepository: OrganizationRepository,
     private _integrationRepository: IntegrationRepository,
-    private _notificationService: NotificationService
+    private _notificationService: NotificationService,
+    private _integrationService: IntegrationService
   ) {}
 
   private readonly _logger = new Logger(UsersService.name);
@@ -109,7 +111,7 @@ export class UsersService {
 
     for (const org of orgs) {
       if (org.users[0].role === Role.SUPERADMIN) {
-        await this._integrationRepository.deleteIntegrationsForAccount(org.id);
+        await this._integrationService.deleteChannelsForAccount(org.id);
         await this._organizationRepository.deleteOrganization(org.id);
       } else {
         await this._organizationRepository.deleteTeamMember(org.id, userId);

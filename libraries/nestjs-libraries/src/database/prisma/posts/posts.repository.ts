@@ -1,4 +1,4 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import { PrismaRepository, PrismaTransaction } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { Post as PostBody } from '@gitroom/nestjs-libraries/dtos/posts/create.post.dto';
 import {
@@ -30,7 +30,8 @@ export class PostsRepository {
     private _comments: PrismaRepository<'comments'>,
     private _tags: PrismaRepository<'tags'>,
     private _tagsPosts: PrismaRepository<'tagsPosts'>,
-    private _errors: PrismaRepository<'errors'>
+    private _errors: PrismaRepository<'errors'>,
+    private _transaction: PrismaTransaction
   ) {}
 
   searchForMissingThreeHoursPosts() {
@@ -101,9 +102,10 @@ export class PostsRepository {
   }
 
   updateImages(id: string, images: string) {
-    return this._post.model.post.update({
+    return this._post.model.post.updateMany({
       where: {
         id,
+        deletedAt: null,
       },
       data: {
         image: images,
@@ -385,9 +387,11 @@ export class PostsRepository {
   }
 
   updatePost(id: string, postId: string, releaseURL: string) {
-    return this._post.model.post.update({
+    return this._post.model.post.updateMany({
       where: {
         id,
+        deletedAt: null,
+        integration: { deletedAt: null, disabled: false },
       },
       data: {
         state: 'PUBLISHED',
@@ -398,11 +402,13 @@ export class PostsRepository {
   }
 
   updateReleaseId(id: string, orgId: string, releaseId: string) {
-    return this._post.model.post.update({
+    return this._post.model.post.updateMany({
       where: {
         id,
         organizationId: orgId,
         releaseId: 'missing',
+        deletedAt: null,
+        integration: { deletedAt: null, disabled: false },
       },
       data: {
         releaseId: String(releaseId),
@@ -411,17 +417,18 @@ export class PostsRepository {
   }
 
   async changeState(id: string, state: State, err?: any, body?: any) {
-    const update = await this._post.model.post.update({
-      where: {
-        id,
-      },
+    return this._transaction.model.$transaction(async tx => {
+    const saved = await tx.post.updateMany({
+      where: { id, deletedAt: null, integration: { deletedAt: null, disabled: false } },
       data: {
         state,
         ...(err
           ? { error: typeof err === 'string' ? err : JSON.stringify(err) }
           : {}),
       },
-      include: {
+    });
+    if (!saved.count) return null;
+    const update = await tx.post.findUnique({ where: { id }, include: {
         integration: {
           select: {
             providerIdentifier: true,
@@ -432,7 +439,7 @@ export class PostsRepository {
 
     if (state === 'ERROR' && err && body) {
       try {
-        await this._errors.model.errors.create({
+        await tx.errors.create({
           data: {
             message: typeof err === 'string' ? err : JSON.stringify(err),
             organizationId: update.organizationId,
@@ -445,6 +452,7 @@ export class PostsRepository {
     }
 
     return update;
+    });
   }
 
   getErrorsByPostIds(postIds: string[]) {
@@ -505,7 +513,24 @@ export class PostsRepository {
     });
   }
 
-  async createOrUpdatePost(
+  async createOrUpdatePost(...args: Parameters<PostsRepository['writePost']>) {
+    const [, orgId, , body] = args;
+    return this._transaction.model.$transaction(async tx => {
+      // Acquiring the same integration row as the removal barrier serializes
+      // post writes against removal. A pre-barrier read is not sufficient.
+      const active = await tx.integration.updateMany({
+        where: { id: body.integration.id, organizationId: orgId, deletedAt: null,
+          disabled: false, token: { not: '' } },
+        data: { updatedAt: new Date() },
+      });
+      if (!active.count) throw new Error('Channel is disconnected');
+      const scoped = { model: tx } as any;
+      return new PostsRepository(scoped, scoped, scoped, scoped, scoped, scoped,
+        this._transaction).writePost(...args);
+    }, { timeout: 15000 });
+  }
+
+  private async writePost(
     state: 'draft' | 'schedule' | 'now' | 'update',
     orgId: string,
     date: string,
@@ -571,6 +596,9 @@ export class PostsRepository {
         await this._post.model.post.upsert({
           where: {
             id: value.id || uuidv4(),
+            organizationId: orgId,
+            integrationId: body.integration.id,
+            deletedAt: null,
           },
           create: { ...updateData('create') },
           update: {
@@ -629,6 +657,8 @@ export class PostsRepository {
           await this._post.model.post.findFirst({
             where: {
               group: body.group,
+              organizationId: orgId,
+              integrationId: body.integration.id,
               deletedAt: null,
               parentPostId: null,
             },
@@ -643,6 +673,8 @@ export class PostsRepository {
       await this._post.model.post.updateMany({
         where: {
           group: body.group,
+          organizationId: orgId,
+          integrationId: body.integration.id,
           deletedAt: null,
         },
         data: {
@@ -658,6 +690,8 @@ export class PostsRepository {
       await this._post.model.post.updateMany({
         where: {
           group: body.group,
+          organizationId: orgId,
+          integrationId: body.integration.id,
           deletedAt: null,
           id: {
             notIn: posts.map((p) => p.id),

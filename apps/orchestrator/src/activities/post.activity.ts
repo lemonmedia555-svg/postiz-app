@@ -159,7 +159,7 @@ export class PostActivity {
       }
     }
     const post = await this._postService.getPostById(postId, orgId);
-    if (post.deletedAt) {
+    if (!post || post.deletedAt) {
       return false;
     }
 
@@ -223,12 +223,7 @@ export class PostActivity {
           posts
         );
 
-        return getIntegration.comment(
-          integration.internalId,
-          postId,
-          lastPostId,
-          integration.token,
-          await Promise.all(
+        const mappedPosts = await Promise.all(
             (newPosts || []).map(async (p) => ({
               id: p.id,
               message: stripHtmlValidation(
@@ -246,7 +241,14 @@ export class PostActivity {
                 getIntegration?.convertToJPEG || false
               ),
             }))
-          ),
+          );
+        Object.assign(integration, await this._integrationService.assertActive(integration));
+        return getIntegration.comment(
+          integration.internalId,
+          postId,
+          lastPostId,
+          integration.token,
+          mappedPosts,
           integration
         );
       })
@@ -277,7 +279,8 @@ export class PostActivity {
     func: () => Promise<T>
   ): Promise<T> {
     try {
-      return await func();
+      Object.assign(integration, await this._integrationService.assertActive(integration));
+      return await this._integrationService.withActiveIntegration(integration, func);
     } catch (err) {
       if (err instanceof Disconnect) {
         try {
@@ -362,6 +365,7 @@ export class PostActivity {
       }))
     );
 
+    Object.assign(integration, await this._integrationService.assertActive(integration));
     const postNow =
       allowPending && getIntegration.postPending
         ? await getIntegration.postPending(

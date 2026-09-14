@@ -269,3 +269,4 @@ export class InstagramStandaloneProvider
     );
   }
 }
+import { providerFetch as fetch } from '../provider.authorization';

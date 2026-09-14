@@ -1,4 +1,4 @@
-import { forwardRef, Inject, Injectable } from '@nestjs/common';
+import { forwardRef, HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { Integration } from '@prisma/client';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
@@ -17,31 +17,30 @@ export class RefreshIntegrationService {
     private _temporalService: TemporalService
   ) {}
   async refresh(integration: Integration, cause = ''): Promise<false | AuthTokenDetails> {
+    try { integration = await this._integrationService.assertActive(integration); }
+    catch { return false; }
     const socialProvider = this._integrationManager.getSocialIntegration(
       integration.providerIdentifier
     );
 
-    const refresh = await this.refreshProcess(integration, socialProvider, cause);
+    const refresh = await this._integrationService.withActiveIntegration(integration,
+      () => this.refreshProcess(integration, socialProvider, cause)).catch(err => {
+        if (err instanceof HttpException && err.getStatus() === HttpStatus.GONE) return false as const;
+        throw err;
+      });
 
     if (!refresh) {
       return false as const;
     }
 
-    await this._integrationService.createOrUpdateIntegration(
-      undefined,
-      !!socialProvider.oneTimeToken,
-      integration.organizationId,
-      integration.name,
-      integration.picture!,
-      'social',
-      integration.internalId,
-      integration.providerIdentifier,
+    const saved = await this._integrationService.updateRefreshedCredentials(
+      integration,
       refresh.accessToken,
       refresh.refreshToken,
-      refresh.expiresIn
+      refresh.expiresIn,
+      !!socialProvider.oneTimeToken
     );
-
-    return refresh;
+    return saved.count ? refresh : false;
   }
 
   public async setBetweenSteps(integration: Integration, cause = '') {
@@ -78,6 +77,8 @@ export class RefreshIntegrationService {
       .catch((err) => false);
 
     if (!refresh || !refresh.accessToken) {
+      try { await this._integrationService.assertActive(integration); }
+      catch { return false; }
       await this._integrationService.refreshNeeded(
         integration.organizationId,
         integration.id

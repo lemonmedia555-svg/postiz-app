@@ -1,12 +1,14 @@
-import { PrismaRepository } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
+import { PrismaRepository, PrismaTransaction } from '@gitroom/nestjs-libraries/database/prisma/prisma.service';
 import { Injectable } from '@nestjs/common';
 import { createHash } from 'crypto';
 import dayjs from 'dayjs';
-import { Integration } from '@prisma/client';
+import { Integration, Prisma } from '@prisma/client';
 import { makeId } from '@gitroom/nestjs-libraries/services/make.is';
 import { IntegrationTimeDto } from '@gitroom/nestjs-libraries/dtos/integrations/integration.time.dto';
 import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { PlugDto } from '@gitroom/nestjs-libraries/dtos/plugs/plug.dto';
+
+export class ChannelAuthorizationChanged extends Error {}
 
 @Injectable()
 export class IntegrationRepository {
@@ -17,7 +19,9 @@ export class IntegrationRepository {
     private _plugs: PrismaRepository<'plugs'>,
     private _exisingPlugData: PrismaRepository<'exisingPlugData'>,
     private _customers: PrismaRepository<'customer'>,
-    private _mentions: PrismaRepository<'mentions'>
+    private _mentions: PrismaRepository<'mentions'>,
+    private _transaction: PrismaTransaction,
+    private _removal: PrismaRepository<'integrationRemoval' | 'media'>
   ) {}
 
   getMentions(platform: string, q: string) {
@@ -97,6 +101,7 @@ export class IntegrationRepository {
       where: {
         id,
         organizationId: org,
+        deletedAt: null,
       },
       data: {
         additionalSettings: settings,
@@ -112,6 +117,7 @@ export class IntegrationRepository {
       where: {
         id,
         organizationId: org,
+        deletedAt: null,
       },
       data: {
         postingTimes: JSON.stringify(times.time),
@@ -148,7 +154,7 @@ export class IntegrationRepository {
     });
   }
 
-  async updateIntegration(id: string, params: Partial<Integration>) {
+  async updateIntegration(id: string, params: Partial<Integration>, expected: Integration) {
     if (
       params.picture &&
       (params.picture.indexOf(process.env.CLOUDFLARE_BUCKET_URL!) === -1 ||
@@ -157,45 +163,34 @@ export class IntegrationRepository {
       params.picture = await this.storage.uploadSimple(params.picture);
     }
 
-    const existing = await this._integration.model.integration.findUnique({
-      where: {
-        organizationId_internalId: {
-          organizationId: params.organizationId!,
-          internalId: params.internalId,
-        },
-      },
-    });
-
-    if (existing) {
-      await this._posts.model.post.updateMany({
-        where: {
-          integrationId: id,
-        },
-        data: {
-          deletedAt: new Date(),
-        },
-      });
-
-      await this._integration.model.integration.update({
-        where: {
-          id,
-        },
-        data: {
-          internalId: `deleted_${params.internalId}_${makeId(10)}`,
-          deletedAt: new Date(),
-        },
-      });
-    }
-
-    return this._integration.model.integration.update({
-      where: {
-        ...(existing ? { id: existing.id } : { id }),
-      },
-      data: {
-        ...params,
-        disabled: false,
-        deletedAt: null,
-      },
+    return this._transaction.model.$transaction(async tx => {
+      const org = expected.organizationId;
+      if (org !== params.organizationId || expected.id !== id) throw new ChannelAuthorizationChanged();
+      const account = await tx.organization.updateMany({ where: { id: org, deletedAt: null }, data: { updatedAt: new Date() } });
+      if (!account.count || await tx.integrationRemoval.findUnique({ where: { scope: `account:${org}` } })) {
+        throw new ChannelAuthorizationChanged('Account deletion is in progress');
+      }
+      const current = await tx.integration.updateMany({ where: {
+        id, organizationId: org, deletedAt: null, disabled: false,
+        token: expected.token, authorizedAt: expected.authorizedAt, inBetweenSteps: true,
+      }, data: { updatedAt: new Date() } });
+      if (!current.count) throw new ChannelAuthorizationChanged('Channel was removed or reconnected');
+      const existing = await tx.integration.findUnique({ where: {
+        organizationId_internalId: { organizationId: org, internalId: params.internalId! },
+      } });
+      // Never revive a deleted target with an old terminal removal receipt.
+      if (existing && existing.id !== id && (existing.deletedAt || existing.disabled || !existing.token)) {
+        throw new ChannelAuthorizationChanged('Selected channel is disconnected; reconnect it explicitly');
+      }
+      if (existing && existing.id !== id) {
+        await tx.post.updateMany({ where: { integrationId: id, organizationId: org }, data: { deletedAt: new Date() } });
+        await tx.integration.update({ where: { id }, data: {
+          internalId: `deleted_${id}`, deletedAt: new Date(), disabled: true, token: '', refreshToken: null, tokenExpiration: null,
+        } });
+      }
+      return tx.integration.update({ where: {
+        id: existing?.id || id, organizationId: org, deletedAt: null, disabled: false,
+      }, data: { ...params, authorizedAt: new Date(), disabled: false } });
     });
   }
 
@@ -211,9 +206,9 @@ export class IntegrationRepository {
     });
   }
 
-  async eraseInstagramStandaloneData(internalId: string, erasePosts = false) {
+  async findInstagramRemovalTargets(internalId: string) {
     const hashedInternalId = createHash('md5').update(internalId).digest('hex');
-    const integrations = await this._integration.model.integration.findMany({
+    return this._integration.model.integration.findMany({
       where: {
         providerIdentifier: 'instagram-standalone',
         OR: [
@@ -225,41 +220,156 @@ export class IntegrationRepository {
           { rootInternalId: { in: [internalId, hashedInternalId] } },
         ],
       },
-      select: { id: true },
     });
+  }
 
-    const deletedAt = new Date();
-    for (const integration of integrations) {
-      if (erasePosts) {
-        await this._posts.model.post.updateMany({
-          where: { integrationId: integration.id, deletedAt: null },
-          data: { deletedAt },
+  getRemoval(scope: string) {
+    return this._removal.model.integrationRemoval.findUnique({ where: { scope } });
+  }
+
+  getRemovalById(id: string) {
+    return this._removal.model.integrationRemoval.findUnique({ where: { id } });
+  }
+
+  pendingRemovals() {
+    return this._removal.model.integrationRemoval.findMany({
+      where: { status: 'pending', attempts: { lt: 3 } }, take: 10,
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  updateRemoval(id: string, data: Prisma.IntegrationRemovalUpdateInput) {
+    return this._removal.model.integrationRemoval.updateMany({ where: { id, status: 'pending' }, data });
+  }
+
+  claimRemovalAttempt(id: string) {
+    return this._removal.model.integrationRemoval.updateMany({
+      where: { id, status: 'pending', attempts: { lt: 3 } }, data: { attempts: { increment: 1 } },
+    });
+  }
+
+  async beginRemoval(scope: string, mode: string, integrations: Integration[], closeOrganization?: string) {
+    return this._transaction.model.$transaction(async (tx) => {
+      if (closeOrganization) {
+        await tx.organization.update({ where: { id: closeOrganization }, data: { updatedAt: new Date() } });
+        integrations = await tx.integration.findMany({ where: { organizationId: closeOrganization } });
+      }
+      const existing = await tx.integrationRemoval.findUnique({ where: { scope } });
+      if (existing) return existing;
+      const targets = [];
+      for (const integration of integrations) {
+        const current = await tx.integration.findFirst({
+          where: { id: integration.id, organizationId: integration.organizationId },
+        });
+        if (!current) continue;
+        // An OAuth completed since target selection: this is a new grant.
+        if ((current.authorizedAt || current.createdAt).getTime() !==
+            (integration.authorizedAt || integration.createdAt).getTime()) {
+          if (mode === 'disconnect') throw new ChannelAuthorizationChanged('Channel reconnected; retry removal');
+          continue;
+        }
+        const posts = await tx.post.findMany({
+          where: { integrationId: current.id, organizationId: current.organizationId },
+          select: { id: true },
+        });
+        targets.push({ id: current.id, org: current.organizationId,
+          picture: current.picture, posts: posts.map(p => p.id) });
+        const root = current.rootInternalId || current.internalId;
+        const tombstone = /^[a-f0-9]{32}$/.test(root) ? root : createHash('md5').update(root).digest('hex');
+        // Commit the barrier with the durable receipt. Never retain a usable
+        // credential while waiting for a cache, workflow or storage retry.
+        await tx.integration.update({ where: { id: current.id }, data: {
+          disabled: true, deletedAt: new Date(), token: '', refreshToken: null,
+          tokenExpiration: null, refreshNeeded: false,
+          internalId: `deleted_${current.id}`, rootInternalId: tombstone,
+        } });
+        await tx.post.updateMany({
+          where: { integrationId: current.id, organizationId: current.organizationId },
+          data: { deletedAt: new Date(), state: 'DRAFT', intervalInDays: null },
         });
       }
+      return tx.integrationRemoval.create({ data: {
+        id: makeId(32), scope, mode, targets,
+      } });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+  }
 
-      await this._integration.model.integration.update({
-        where: { id: integration.id },
-        data: {
-          name: 'Deleted Instagram account',
-          internalId: erasePosts
-            ? `deleted_${makeId(24)}`
-            : `deauthorized_${hashedInternalId}_${makeId(6)}`,
-          rootInternalId: erasePosts ? null : hashedInternalId,
-          token: '',
-          refreshToken: null,
-          tokenExpiration: null,
-          profile: null,
-          picture: null,
-          customInstanceDetails: null,
-          additionalSettings: '[]',
-          disabled: true,
-          refreshNeeded: false,
-          deletedAt,
-        },
+  async eraseChannelRecords(org: string, id: string) {
+    return this._transaction.model.$transaction(async (tx) => {
+      const current = await tx.integration.findFirst({ where: { id, organizationId: org } });
+      if (!current) return [];
+      const originalId = current.rootInternalId || current.internalId;
+      const rootHash = /^[a-f0-9]{32}$/.test(originalId) ? originalId
+        : createHash('md5').update(originalId).digest('hex');
+      const postWhere = { organizationId: org, integrationId: id };
+      const posts = await tx.post.findMany({ where: postWhere, select: { id: true } });
+      const ids = posts.map(p => p.id);
+      await tx.comments.deleteMany({ where: { postId: { in: ids } } });
+      await tx.errors.deleteMany({ where: { postId: { in: ids } } });
+      await tx.tagsPosts.deleteMany({ where: { postId: { in: ids } } });
+      await tx.plugs.deleteMany({ where: { integrationId: id, organizationId: org } });
+      await tx.exisingPlugData.deleteMany({ where: { integrationId: id } });
+      await tx.integrationsWebhooks.deleteMany({ where: { integrationId: id } });
+      const autoposts = await tx.autoPost.findMany({ where: { organizationId: org, deletedAt: null } });
+      for (const autopost of autoposts) {
+        let selected: Array<{ id: string }>;
+        try { selected = JSON.parse(autopost.integrations); } catch { continue; }
+        if (!Array.isArray(selected) || !selected.some(item => item.id === id)) continue;
+        const remaining = selected.filter(item => item.id !== id);
+        // An empty list means ALL channels in this feature: disable instead.
+        await tx.autoPost.update({ where: { id: autopost.id }, data: {
+          integrations: JSON.stringify(remaining), ...(remaining.length ? {} : { active: false }),
+        } });
+      }
+      // Keep only technical rows required by financial/parent foreign keys.
+      // The actual stored content and platform identifiers are overwritten.
+      await tx.post.updateMany({ where: postWhere, data: {
+        deletedAt: new Date(), state: 'DRAFT', content: '', title: null,
+        description: null, releaseId: null, releaseURL: null, settings: null,
+        image: null, error: null, intervalInDays: null, lastMessageId: null,
+      } });
+      await tx.integration.updateMany({ where: { id, organizationId: org }, data: {
+        name: 'Deleted channel', picture: null, profile: null, token: '',
+        refreshToken: null, tokenExpiration: null, customInstanceDetails: null,
+        additionalSettings: '[]', customerId: null, disabled: true,
+        inBetweenSteps: false, refreshNeeded: false, deletedAt: new Date(),
+        internalId: `deleted_${id}`, rootInternalId: rootHash,
+        // Keep a non-public matching tombstone for a later signed Meta request.
+        // Historic backups and tombstones require the separate review stage.
+      } });
+      return ids;
+    });
+  }
+
+  async pictureIsShared(picture: string, excludingId: string) {
+    return !!(await this._integration.model.integration.findFirst({
+      where: { picture, id: { not: excludingId } }, select: { id: true },
+    })) || !!(await this._removal.model.media.findFirst({
+      where: { OR: [{ path: picture }, { thumbnail: picture }] }, select: { id: true },
+    })) || !!(await this._posts.model.post.findFirst({
+      where: { integrationId: { not: excludingId }, image: { contains: picture } },
+      select: { id: true },
+    }));
+  }
+
+  async updateRefreshedCredentials(integration: Integration, accessToken: string,
+    refreshToken?: string, expiresIn?: number, oneTimeToken = false) {
+    return this._transaction.model.$transaction(async tx => {
+      const data = { token: accessToken, refreshToken: refreshToken || null,
+        ...(expiresIn ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) } : {}),
+        refreshNeeded: false };
+      const saved = await tx.integration.updateMany({
+      where: { id: integration.id, organizationId: integration.organizationId,
+        deletedAt: null, disabled: false, token: integration.token },
+      data,
       });
-    }
-
-    return integrations.length;
+      if (saved.count && oneTimeToken) await tx.integration.updateMany({
+        where: { id: { not: integration.id }, organizationId: integration.organizationId,
+          providerIdentifier: integration.providerIdentifier, rootInternalId: integration.rootInternalId || integration.internalId,
+          deletedAt: null, disabled: false, token: integration.token }, data,
+      });
+      return saved;
+    });
   }
 
   getIntegrationByInternalId(org: string, internalId: string) {
@@ -284,11 +394,18 @@ export class IntegrationRepository {
     providerIdentifier: string,
     rootInternalId: string
   ) {
+    return this._transaction.model.$transaction(async tx => {
+    const account = await tx.organization.updateMany({ where: { id: org, deletedAt: null }, data: { updatedAt: new Date() } });
+    if (!account.count || await tx.integrationRemoval.findUnique({ where: { scope: `account:${org}` } })) {
+      throw new ChannelAuthorizationChanged('Account deletion is in progress');
+    }
+    const current = await tx.integration.updateMany({ where: { id, organizationId: org, deletedAt: null }, data: { updatedAt: new Date() } });
+    if (!current.count) throw new ChannelAuthorizationChanged('Channel was removed');
     // A soft-deleted channel can still hold the target internalId
     // (deleteChannel keeps it): rename it out of the way like updateIntegration
     // does, otherwise the organizationId_internalId unique constraint rejects
     // the migration. Live channels are rejected by the service before this.
-    const existing = await this._integration.model.integration.findUnique({
+    const existing = await tx.integration.findUnique({
       where: {
         organizationId_internalId: {
           organizationId: org,
@@ -298,7 +415,7 @@ export class IntegrationRepository {
     });
 
     if (existing && existing.deletedAt) {
-      await this._integration.model.integration.update({
+      await tx.integration.update({
         where: {
           id: existing.id,
         },
@@ -308,10 +425,12 @@ export class IntegrationRepository {
       });
     }
 
-    return this._integration.model.integration.update({
+    return tx.integration.update({
       where: {
         id,
         organizationId: org,
+        deletedAt: null,
+        organization: { deletedAt: null },
       },
       data: {
         internalId,
@@ -319,9 +438,22 @@ export class IntegrationRepository {
         rootInternalId,
       },
     });
+    });
   }
 
-  async createOrUpdateIntegration(
+  async createOrUpdateIntegration(...args: Parameters<IntegrationRepository['writeIntegration']>) {
+    return this._transaction.model.$transaction(async tx => {
+      const org = args[2];
+      const active = await tx.organization.updateMany({ where: { id: org, deletedAt: null }, data: { updatedAt: new Date() } });
+      if (!active.count || await tx.integrationRemoval.findUnique({ where: { scope: `account:${org}` } })) {
+        throw new Error('Account deletion is in progress');
+      }
+      const model = { model: tx } as any;
+      return new IntegrationRepository(model, model, model, model, model, model, this._transaction, model).writeIntegration(...args);
+    });
+  }
+
+  private async writeIntegration(
     additionalSettings:
       | {
           title: string;
@@ -365,6 +497,7 @@ export class IntegrationRepository {
       },
       create: {
         type: type as any,
+        authorizedAt: new Date(),
         name,
         providerIdentifier: provider,
         token,
@@ -386,6 +519,7 @@ export class IntegrationRepository {
           : '[]',
       },
       update: {
+        authorizedAt: new Date(),
         ...(additionalSettings
           ? { additionalSettings: JSON.stringify(additionalSettings) }
           : {}),
@@ -428,6 +562,10 @@ export class IntegrationRepository {
             not: upsert.id,
           },
           rootInternalId: rootId,
+          organizationId: org,
+          deletedAt: null,
+          disabled: false,
+          providerIdentifier: provider,
         },
         data: {
           token,
@@ -457,9 +595,10 @@ export class IntegrationRepository {
   }
 
   async setBetweenRefreshSteps(id: string) {
-    return this._integration.model.integration.update({
+    return this._integration.model.integration.updateMany({
       where: {
         id,
+        deletedAt: null,
       },
       data: {
         inBetweenSteps: true,
@@ -467,10 +606,11 @@ export class IntegrationRepository {
     });
   }
   refreshNeeded(org: string, id: string) {
-    return this._integration.model.integration.update({
+    return this._integration.model.integration.updateMany({
       where: {
         id,
         organizationId: org,
+        deletedAt: null,
       },
       data: {
         refreshNeeded: true,
@@ -479,9 +619,10 @@ export class IntegrationRepository {
   }
 
   updateNameAndUrl(id: string, name: string, url: string) {
-    return this._integration.model.integration.update({
+    return this._integration.model.integration.updateMany({
       where: {
         id,
+        deletedAt: null,
       },
       data: {
         ...(name ? { name } : {}),
@@ -494,6 +635,7 @@ export class IntegrationRepository {
     return this._integration.model.integration.findFirst({
       where: {
         organizationId: org,
+        organization: { deletedAt: null },
         id,
       },
     });
@@ -573,6 +715,7 @@ export class IntegrationRepository {
       where: {
         id,
         organizationId: org,
+        deletedAt: null,
       },
       data: !group
         ? {
@@ -611,6 +754,10 @@ export class IntegrationRepository {
     });
   }
 
+  getAllChannelsForRemoval(org: string) {
+    return this._integration.model.integration.findMany({ where: { organizationId: org } });
+  }
+
   async disableChannel(org: string, id: string) {
     await this._integration.model.integration.update({
       where: {
@@ -628,6 +775,8 @@ export class IntegrationRepository {
       where: {
         id,
         organizationId: org,
+        deletedAt: null,
+        token: { not: '' },
       },
       data: {
         disabled: false,

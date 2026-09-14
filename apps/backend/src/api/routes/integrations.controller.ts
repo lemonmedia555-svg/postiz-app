@@ -425,16 +425,6 @@ export class IntegrationsController {
     @GetOrgFromRequest() org: Organization,
     @Body('id') id: string
   ) {
-    const isTherePosts = await this._integrationService.getPostsForChannel(
-      org.id,
-      id
-    );
-    if (isTherePosts.length) {
-      for (const post of isTherePosts) {
-        this._postService.deletePost(org.id, post.group).catch((err) => {});
-      }
-    }
-
     return this._integrationService.deleteChannel(org.id, id);
   }
 

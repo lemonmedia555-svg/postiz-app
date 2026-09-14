@@ -17,10 +17,12 @@ import { TemporalRegisterMissingSearchAttributesModule } from '@gitroom/nestjs-l
 import { InfiniteWorkflowRegisterModule } from '@gitroom/nestjs-libraries/temporal/infinite.workflow.register';
 import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis';
 import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Global()
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     SentryModule.forRoot(),
     DatabaseModule,
     ApiModule,

@@ -88,7 +88,8 @@ export class PostsService {
     forceRefresh = false
   ): Promise<{ id: string; url: string }[]> {
     const post = await this._postRepository.getPostById(postId, orgId);
-    if (!post || post.releaseId !== 'missing') {
+    if (!post || post.deletedAt || post.releaseId !== 'missing' || post.integration.deletedAt ||
+        post.integration.disabled || !post.integration.token) {
       return [];
     }
 
@@ -128,10 +129,11 @@ export class PostsService {
     }
 
     try {
-      return await integrationProvider.missing(
+      Object.assign(getIntegration, await this._integrationService.assertActive(getIntegration));
+      return await this._integrationService.withActiveIntegration(getIntegration, () => integrationProvider.missing(
         getIntegration.internalId,
         getIntegration.token
-      );
+      ));
     } catch (e) {
       console.log(e);
       if (e instanceof RefreshToken) {
@@ -157,7 +159,7 @@ export class PostsService {
     forceRefresh = false
   ): Promise<AnalyticsData[] | { missing: true }> {
     const post = await this._postRepository.getPostById(postId, orgId);
-    if (!post || !post.releaseId) {
+    if (!post || post.deletedAt || !post.releaseId || post.integration.deletedAt || post.integration.disabled || !post.integration.token) {
       return [];
     }
 
@@ -208,12 +210,14 @@ export class PostsService {
     // }
 
     try {
-      const loadAnalytics = await integrationProvider.postAnalytics(
+      await this._integrationService.assertActive(getIntegration);
+      const loadAnalytics = await this._integrationService.withActiveIntegration(getIntegration, () => integrationProvider.postAnalytics(
         getIntegration.internalId,
         getIntegration.token,
         post.releaseId,
         date
-      );
+      ));
+      await this._integrationService.assertActive(getIntegration);
       await ioRedis.set(
         `integration:${orgId}:${post.id}:${date}`,
         JSON.stringify(loadAnalytics),
@@ -222,6 +226,10 @@ export class PostsService {
           ? 1
           : 3600
       );
+      try { await this._integrationService.assertActive(getIntegration); } catch (err) {
+        await ioRedis.del(`integration:${orgId}:${post.id}:${date}`);
+        throw err;
+      }
       return loadAnalytics;
     } catch (e) {
       console.log(e);

@@ -129,7 +129,7 @@ export const Menu: FC<{
   const deleteChannel = useCallback(async () => {
     if (
       !(await deleteDialog(
-        t('are_you_sure_delete_channel', 'Are you sure you want to delete this channel?'),
+        t('confirm_channel_local_removal', 'Disconnect this channel and remove its posts from Creatu? Published social posts stay online. Revoke permissions separately in the social network. Full data erasure requires support review.'),
         t('delete_channel_title', 'Delete Channel')
       ))
     ) {
@@ -148,6 +148,13 @@ export const Menu: FC<{
       );
       return;
     }
+    if (!deleteIntegration.ok) {
+      const error = await deleteIntegration.json().catch(() => ({}));
+      toast.show(error.message || t('channel_cleanup_pending', 'Channel cleanup is pending. Please contact support.'), 'warning');
+      setShow(false);
+      onChange(true);
+      return;
+    }
     // Clean up extension refresh token if applicable
     if (
       extensionId &&
@@ -164,7 +171,7 @@ export const Menu: FC<{
         // Silently ignore
       }
     }
-    toast.show(t('channel_deleted', 'Channel Deleted'), 'success');
+    toast.show(t('channel_disconnected_locally', 'Channel disconnected in Creatu. Revoke its permissions separately in the social network. Full data erasure requires support review.'), 'success');
     setShow(false);
     onChange(true);
   }, [t, extensionId, id]);

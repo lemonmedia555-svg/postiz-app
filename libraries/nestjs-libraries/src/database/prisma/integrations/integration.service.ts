@@ -5,7 +5,7 @@ import {
   Inject,
   Injectable,
 } from '@nestjs/common';
-import { IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
+import { ChannelAuthorizationChanged, IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
   AnalyticsData,
@@ -28,6 +28,9 @@ import utc from 'dayjs/plugin/utc';
 import { AutopostRepository } from '@gitroom/nestjs-libraries/database/prisma/autopost/autopost.repository';
 import { RefreshIntegrationService } from '@gitroom/nestjs-libraries/integrations/refresh.integration.service';
 import { TemporalService } from 'nestjs-temporal-core';
+import { Cron } from '@nestjs/schedule';
+import { createHash } from 'crypto';
+import { withProviderAuthorization } from '@gitroom/nestjs-libraries/integrations/provider.authorization';
 
 dayjs.extend(utc);
 
@@ -191,11 +194,115 @@ export class IntegrationService {
     await this.informAboutRefreshError(orgId, integration, err);
   }
 
-  eraseInstagramStandaloneData(internalId: string, erasePosts = false) {
-    return this._integrationRepository.eraseInstagramStandaloneData(
-      internalId,
-      erasePosts
+  async eraseInstagramStandaloneData(internalId: string, erasePosts = false, issuedAt = 0) {
+    const scope = `meta:${createHash('sha256').update(internalId).digest('hex')}:${issuedAt}:${erasePosts}`;
+    const previous = await this._integrationRepository.getRemoval(scope);
+    const request = previous || await this._integrationRepository.beginRemoval(
+      scope, erasePosts ? 'data-deletion' : 'deauthorize',
+      (await this._integrationRepository.findInstagramRemovalTargets(internalId))
+        .filter(i => !issuedAt || (i.authorizedAt || i.createdAt).getTime() < (issuedAt + 1) * 1000)
     );
+    await this.processRemoval(request.id);
+    return this._integrationRepository.getRemovalById(request.id);
+  }
+
+  async assertActive(integration: Pick<Integration, 'id' | 'organizationId'>) {
+    const current = await this.getIntegrationById(integration.organizationId, integration.id);
+    if (!current || current.deletedAt || current.disabled || !current.token) {
+      throw new HttpException('Channel is disconnected', HttpStatus.GONE);
+    }
+    return current;
+  }
+
+  withActiveIntegration<T>(integration: Pick<Integration, 'id' | 'organizationId'>, action: () => Promise<T>) {
+    return withProviderAuthorization(() => this.assertActive(integration), action);
+  }
+
+  updateRefreshedCredentials(integration: Integration, accessToken: string, refreshToken?: string, expiresIn?: number, oneTimeToken = false) {
+    return this._integrationRepository.updateRefreshedCredentials(integration, accessToken, refreshToken, expiresIn, oneTimeToken);
+  }
+
+  async deleteChannelsForAccount(org: string) {
+    const request = await this._integrationRepository.getRemoval(`account:${org}`) ||
+      await this._integrationRepository.beginRemoval(`account:${org}`, 'data-deletion',
+        [], org);
+    await this.processRemoval(request.id);
+    const result = await this._integrationRepository.getRemovalById(request.id);
+    if (result.status === 'pending') throw new HttpException('Account channel cleanup is pending', HttpStatus.SERVICE_UNAVAILABLE);
+  }
+
+  getRemovalStatus(id: string) {
+    return this._integrationRepository.getRemovalById(id);
+  }
+
+  // A durable receipt is created before any cleanup. Failed stages remain
+  // retryable, with a strict three-attempt ceiling and no false "completed".
+  @Cron('*/1 * * * *')
+  async retryPendingRemovals() {
+    for (const request of await this._integrationRepository.pendingRemovals()) {
+      await this.processRemoval(request.id);
+    }
+  }
+
+  async processRemoval(id: string) {
+    const lockKey = `integration-removal-lock:${id}`;
+    const lockValue = createHash('sha256').update(`${id}:${Date.now()}:${Math.random()}`).digest('hex');
+    if (!(await ioRedis.set(lockKey, lockValue, 'EX', 300, 'NX'))) return;
+    let ownsLock = true;
+    const renewal = setInterval(() => {
+      ioRedis.eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], 300) else return 0 end', 1, lockKey, lockValue)
+        .then(result => { if (!result) ownsLock = false; }).catch(() => { ownsLock = false; });
+    }, 30000);
+    renewal.unref();
+    try {
+      const request = await this._integrationRepository.getRemovalById(id);
+      if (!request || request.status !== 'pending' || request.attempts >= 3) return;
+      if (!(await this._integrationRepository.claimRemovalAttempt(id)).count) return;
+      const targets = request.targets as Array<{ id: string; org: string; picture?: string; posts: string[] }>;
+      for (const target of targets) {
+        if (!ownsLock) throw new Error('Removal lease lost');
+        const client = this._temporalService.client.getRawClient();
+        if (!client) throw new Error('Background queue unavailable');
+        // The raw database IDs are generated internally, never a search expression supplied by a user.
+        if (![target.id, ...target.posts].every(v => /^[A-Za-z0-9_-]+$/.test(v))) {
+          throw new Error('Invalid removal target');
+        }
+        const queries = [`WorkflowId="refresh_${target.id}"`,
+          ...target.posts.map(post => `postId="${post}"`)];
+        for (const query of queries) {
+          for await (const execution of client.workflow.list({ query: `${query} AND ExecutionStatus="Running"` })) {
+            try {
+              await client.workflow.getHandle(execution.workflowId, execution.runId).terminate('Channel removed');
+            } catch (err) {
+              if ((err as Error)?.name !== 'WorkflowNotFoundError') throw err;
+            }
+          }
+        }
+        const postIds = await this._integrationRepository.eraseChannelRecords(target.org, target.id);
+        for (const entityId of new Set([target.id, ...target.posts, ...postIds])) {
+          let cursor = '0';
+          do {
+            const result = await ioRedis.scan(cursor, 'MATCH', `integration:${target.org}:${entityId}:*`, 'COUNT', 100);
+            cursor = result[0];
+            if (result[1].length) await ioRedis.del(...result[1]);
+          } while (cursor !== '0');
+        }
+        // Imported files can be referenced by other posts/accounts concurrently.
+        // Never unlink them based on a non-atomic reference check. Preserve the
+        // exact URL in the receipt for the separate, operator-reviewed erasure.
+      }
+      if (!ownsLock || await ioRedis.get(lockKey) !== lockValue) throw new Error('Removal lease lost');
+      await this._integrationRepository.updateRemoval(id, {
+        status: request.mode === 'disconnect' ? 'disconnected' : 'active_data_deleted_pending_review',
+        targets, lastError: null,
+      });
+    } catch {
+      // Do not persist provider exceptions: their URLs can contain credentials.
+      await this._integrationRepository.updateRemoval(id, { lastError: 'Cleanup requires retry or operator review' });
+    } finally {
+      clearInterval(renewal);
+      await ioRedis.eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, lockKey, lockValue);
+    }
   }
 
   // A reconnect that came back from a different provider (MIGRATE_PROVIDERS):
@@ -331,39 +438,7 @@ export class IntegrationService {
   async refreshTokens() {
     const integrations = await this._integrationRepository.needsToBeRefreshed();
     for (const integration of integrations) {
-      const provider = this._integrationManager.getSocialIntegration(
-        integration.providerIdentifier
-      );
-
-      const data = await this.refreshToken(provider, integration.refreshToken!);
-
-      if (!data) {
-        await this.informAboutRefreshError(
-          integration.organizationId,
-          integration
-        );
-        await this._integrationRepository.refreshNeeded(
-          integration.organizationId,
-          integration.id
-        );
-        return;
-      }
-
-      const { refreshToken, accessToken, expiresIn } = data;
-
-      await this.createOrUpdateIntegration(
-        undefined,
-        !!provider.oneTimeToken,
-        integration.organizationId,
-        integration.name,
-        undefined,
-        'social',
-        integration.internalId,
-        integration.providerIdentifier,
-        accessToken,
-        refreshToken,
-        expiresIn
-      );
+      await this._refreshIntegrationService.refresh(integration);
     }
   }
 
@@ -390,7 +465,23 @@ export class IntegrationService {
   }
 
   async deleteChannel(org: string, id: string) {
-    return this._integrationRepository.deleteChannel(org, id);
+    const integration = await this.getIntegrationById(org, id);
+    if (!integration) throw new HttpException('Channel not found', HttpStatus.NOT_FOUND);
+    const request = await this._integrationRepository.getRemoval(`channel:${id}`) ||
+      await this._integrationRepository.beginRemoval(`channel:${id}`, 'disconnect', [integration]).catch(err => {
+        if (err instanceof ChannelAuthorizationChanged) {
+          throw new HttpException('This channel was reconnected. Please retry disconnecting it.', HttpStatus.CONFLICT);
+        }
+        throw err;
+      });
+    await this.processRemoval(request.id);
+    const result = await this._integrationRepository.getRemovalById(request.id);
+    if (result.status !== 'disconnected') {
+      throw new HttpException('Channel access stopped. Data cleanup is pending; contact support with request ' + request.id,
+        HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    return { success: true, status: 'disconnected', authorizationRevoked: false,
+      erasurePendingReview: true, requestId: request.id };
   }
 
   async disableIntegrations(org: string, totalChannels: number) {
@@ -409,6 +500,7 @@ export class IntegrationService {
     if (!getIntegration) {
       throw new HttpException('Integration not found', HttpStatus.NOT_FOUND);
     }
+    await this.assertActive(getIntegration);
     if (!getIntegration.inBetweenSteps) {
       throw new HttpException('Invalid request', HttpStatus.BAD_REQUEST);
     }
@@ -424,10 +516,10 @@ export class IntegrationService {
       );
     }
 
-    const getIntegrationInformation = await provider.fetchPageInformation(
+    const getIntegrationInformation = await this.withActiveIntegration(getIntegration, () => provider.fetchPageInformation(
       getIntegration.token,
       data
-    );
+    ));
 
     await this.checkForDeletedOnceAndUpdate(
       org,
@@ -441,6 +533,9 @@ export class IntegrationService {
       inBetweenSteps: false,
       token: getIntegrationInformation.access_token,
       profile: getIntegrationInformation.username,
+    }, getIntegration).catch(err => {
+      if (err instanceof ChannelAuthorizationChanged) throw new HttpException('Channel changed. Please reconnect it.', HttpStatus.CONFLICT);
+      throw err;
     });
 
     return { success: true };
@@ -454,7 +549,7 @@ export class IntegrationService {
   ): Promise<AnalyticsData[]> {
     const getIntegration = await this.getIntegrationById(org.id, integration);
 
-    if (!getIntegration) {
+    if (!getIntegration || getIntegration.deletedAt || getIntegration.disabled || !getIntegration.token) {
       throw new Error('Invalid integration');
     }
 
@@ -500,11 +595,13 @@ export class IntegrationService {
 
     if (integrationProvider.analytics) {
       try {
-        const loadAnalytics = await integrationProvider.analytics(
+        await this.assertActive(getIntegration);
+        const loadAnalytics = await this.withActiveIntegration(getIntegration, () => integrationProvider.analytics(
           getIntegration.internalId,
           getIntegration.token,
           +date
-        );
+        ));
+        await this.assertActive(getIntegration);
         await ioRedis.set(
           `integration:${org.id}:${integration}:${date}`,
           JSON.stringify(loadAnalytics),
@@ -513,6 +610,10 @@ export class IntegrationService {
             ? 1
             : 3600
         );
+        try { await this.assertActive(getIntegration); } catch (err) {
+          await ioRedis.del(`integration:${org.id}:${integration}:${date}`);
+          throw err;
+        }
         return loadAnalytics;
       } catch (e) {
         if (e instanceof RefreshToken) {
@@ -558,7 +659,9 @@ export class IntegrationService {
       data.integration
     );
 
-    if (!getIntegration || !originalIntegration) {
+    if (!getIntegration || !originalIntegration || getIntegration.deletedAt ||
+        originalIntegration.deletedAt || getIntegration.disabled || originalIntegration.disabled ||
+        !getIntegration.token || !originalIntegration.token) {
       return;
     }
 
@@ -574,13 +677,16 @@ export class IntegrationService {
       getIntegration.providerIdentifier
     );
 
-    // @ts-ignore
-    await getSocialIntegration?.[getAllInternalPlugs.methodName]?.(
+    Object.assign(getIntegration, await this.assertActive(getIntegration));
+    Object.assign(originalIntegration, await this.assertActive(originalIntegration));
+    await withProviderAuthorization(async () => {
+      await this.assertActive(getIntegration); await this.assertActive(originalIntegration);
+    }, () => getSocialIntegration?.[getAllInternalPlugs.methodName]?.(
       getIntegration,
       originalIntegration,
       data.post,
       data.information
-    );
+    ));
 
     return;
   }
@@ -597,19 +703,22 @@ export class IntegrationService {
       return true;
     }
 
+    try { Object.assign(getPlugById.integration, await this.assertActive(getPlugById.integration)); }
+    catch { return true; }
+
     const integration = this._integrationManager.getSocialIntegration(
       getPlugById.integration.providerIdentifier
     );
 
     // @ts-ignore
-    const process = await integration[getPlugById.plugFunction](
+    const process = await this.withActiveIntegration(getPlugById.integration, () => integration[getPlugById.plugFunction](
       getPlugById.integration,
       data.postId,
       JSON.parse(getPlugById.data).reduce((all: any, current: any) => {
         all[current.name] = current.value;
         return all;
       }, {})
-    );
+    ));
 
     if (process) {
       return true;

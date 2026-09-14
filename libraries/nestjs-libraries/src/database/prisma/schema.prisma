@@ -333,6 +333,7 @@ model Integration {
   updatedAt             DateTime?              @updatedAt
   inBetweenSteps        Boolean                @default(false)
   refreshNeeded         Boolean                @default(false)
+  authorizedAt          DateTime?
   postingTimes          String                 @default("[{\"time\":120}, {\"time\":400}, {\"time\":700}]")
   customInstanceDetails String?
   customerId            String?
@@ -357,6 +358,22 @@ model Integration {
   @@index([inBetweenSteps])
   @@index([refreshNeeded])
   @@index([disabled])
+}
+
+// Durable, retryable removal receipts. No access tokens are stored here.
+// Completion of active cleanup does not certify erasure of historic backups.
+model IntegrationRemoval {
+  id        String   @id
+  scope     String   @unique
+  mode      String
+  status    String   @default("pending")
+  targets   Json
+  attempts  Int      @default(0)
+  lastError String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, updatedAt])
 }
 
 model Signatures {
