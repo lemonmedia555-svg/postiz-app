@@ -1,9 +1,6 @@
-import { getT } from '@gitroom/react/translation/get.translation.service.backend';
-
 export const dynamic = 'force-dynamic';
 import { ReactNode } from 'react';
 import loadDynamic from 'next/dynamic';
-import { TestimonialComponent } from '@gitroom/frontend/components/auth/testimonial.component';
 import { LogoTextComponent } from '@gitroom/frontend/components/ui/logo-text.component';
 const ReturnUrlComponent = loadDynamic(() => import('./return.url.component'));
 export default async function AuthLayout({
@@ -11,8 +8,6 @@ export default async function AuthLayout({
 }: {
   children: ReactNode;
 }) {
-  const t = await getT();
-
   return (
     <div className="bg-[#0E0E0E] flex flex-1 p-[12px] gap-[12px] min-h-screen w-screen text-white">
       {/*<style>{`html, body {overflow-x: hidden;}`}</style>*/}
@@ -21,16 +16,20 @@ export default async function AuthLayout({
         <div className="w-full max-w-[440px] mx-auto justify-center gap-[20px] h-full flex flex-col text-white">
           <LogoTextComponent />
           <div className="flex">{children}</div>
+          <nav aria-label="Creatu policies" className="flex flex-wrap gap-x-[14px] gap-y-[6px] text-[12px] text-[#B9B9B9]">
+            <a className="underline hover:text-white" href="https://creatu.io/privacy/">Privacy</a>
+            <a className="underline hover:text-white" href="https://creatu.io/terms/">Terms</a>
+            <a className="underline hover:text-white" href="https://creatu.io/data-deletion/">Data deletion</a>
+          </nav>
         </div>
       </div>
-      <div className="text-[36px] flex-1 pt-[88px] hidden lg:flex flex-col items-center">
-        <div className="text-center">
-          Over <span className="text-[42px] text-[#FC69FF]">20,000+</span>{' '}
-          Entrepreneurs use
-          <br />
-          Postiz To Grow Their Social Presence
+      <div className="flex-1 pt-[88px] hidden lg:flex flex-col items-center">
+        <div className="text-center max-w-[600px] px-[30px]">
+          <h1 className="text-[36px] leading-tight font-semibold">Plan your content with Creatu</h1>
+          <p className="text-[18px] leading-relaxed text-[#C7C7C7] mt-[24px]">
+            Prepare posts in the editor and calendar. YouTube connection, analytics and private video upload have been tested on our own channel. Customer access and public video uploads await Google and YouTube review.
+          </p>
         </div>
-        <TestimonialComponent />
       </div>
     </div>
   );

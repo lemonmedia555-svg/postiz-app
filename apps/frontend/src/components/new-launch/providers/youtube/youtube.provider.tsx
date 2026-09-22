@@ -44,9 +44,9 @@ const YoutubeSettings: FC = () => {
     <div className="flex flex-col">
       <Input label="Title" {...register('title')} maxLength={100} />
       <Select
-        label="Type"
+        label="Visibility"
         {...register('type', {
-          value: 'public',
+          value: 'private',
         })}
       >
         {type.map((t) => (
@@ -55,6 +55,9 @@ const YoutubeSettings: FC = () => {
           </option>
         ))}
       </Select>
+      <p className="mt-[8px] mb-[12px] text-[13px] text-[#B9B9B9]">
+        Until YouTube completes its API audit, videos uploaded through Creatu remain private even if you select Public or Unlisted.
+      </p>
       <Select
         label="Made for kids"
         {...register('selfDeclaredMadeForKids', {
