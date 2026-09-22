@@ -11,6 +11,7 @@ import { ioRedis } from '@gitroom/nestjs-libraries/redis/redis.service';
 import { ConnectIntegrationDto } from '@gitroom/nestjs-libraries/dtos/integrations/connect.integration.dto';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import { IntegrationService } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.service';
+import { GrantClosedDuringConnection } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { CheckPolicies } from '@gitroom/backend/services/auth/permissions/permissions.ability';
 import { ApiTags } from '@nestjs/swagger';
 import { NotEnoughScopesFilter } from '@gitroom/nestjs-libraries/integrations/integration.missing.scopes';
@@ -35,6 +36,13 @@ export class NoAuthIntegrationsController {
     private _organizationService: OrganizationService
   ) {}
 
+  private async rejectStaleGrant(error: unknown): Promise<never> {
+    if (!(error instanceof GrantClosedDuringConnection)) throw error;
+    // The callback token is never stored. A late project-wide revoke could
+    // invalidate a newer connection, so tell the user to review Google access.
+    throw new HttpException('Google access changed during connection. Please connect again and review Creatu access in your Google account permissions.', 409);
+  }
+
   @Get('/')
   getIntegrations() {
     return this._integrationManager.getAllIntegrations();
@@ -47,6 +55,7 @@ export class NoAuthIntegrationsController {
     @Param('integration') integration: string,
     @Body() body: ConnectIntegrationDto
   ) {
+    const oauthCallbackStartedAt = new Date();
     if (
       !this._integrationManager
         .getAllowedSocialsIntegrations()
@@ -100,6 +109,7 @@ export class NoAuthIntegrationsController {
       expiresIn,
       refreshToken,
       id,
+      rootId,
       name,
       picture,
       username,
@@ -136,7 +146,7 @@ export class NoAuthIntegrationsController {
               refresh,
               auth.accessToken
             );
-            return res({ ...newAuth, refreshToken: body.refresh });
+            return res({ ...newAuth, refreshToken: body.refresh, rootId: auth.id });
           } catch (err: any) {
             return res({
               error: err.message,
@@ -183,6 +193,7 @@ export class NoAuthIntegrationsController {
     if (!id) {
       throw new NotEnoughScopes('Invalid API key');
     }
+    const oauthRootId = rootId || String(id);
 
     let validName = name;
     if (!validName) {
@@ -215,8 +226,9 @@ export class NoAuthIntegrationsController {
         org.id,
         refresh,
         integration,
-        { id: String(id), username }
-      );
+        { id: String(id), username },
+        oauthCallbackStartedAt
+      ).catch(error => this.rejectStaleGrant(error));
     } else if (!refresh) {
       // A fresh connect of a migration target for an account the org already
       // has on the source provider adopts that channel instead of creating a
@@ -224,8 +236,9 @@ export class NoAuthIntegrationsController {
       await this._integrationService.migrateIntegrationOnConnect(
         org.id,
         integration,
-        { id: String(id), username }
-      );
+        { id: String(id), username },
+        oauthCallbackStartedAt
+      ).catch(error => this.rejectStaleGrant(error));
     }
 
     const createUpdate =
@@ -255,13 +268,15 @@ export class NoAuthIntegrationsController {
           ? AuthService.fixedEncryption(
               Buffer.from(body.code, 'base64').toString()
             )
-          : undefined
-      );
+          : undefined,
+        oauthCallbackStartedAt,
+        integration === 'youtube' ? oauthRootId : undefined
+      ).catch(error => this.rejectStaleGrant(error));
 
     this._refreshIntegrationService
       .startRefreshWorkflow(org.id, createUpdate.id, integrationProvider)
-      .catch((err) => {
-        console.log(err);
+      .catch(() => {
+        console.log('Failed to start channel refresh workflow');
       });
 
     // Fetch pages if this is a two-step provider and not a refresh
@@ -280,8 +295,8 @@ export class NoAuthIntegrationsController {
           // @ts-ignore - dynamic method call
           pages = await integrationProvider[fetchMethod](accessToken);
         }
-      } catch (err) {
-        console.log('Failed to fetch pages:', err);
+      } catch {
+        console.log('Failed to fetch pages');
       }
     }
 

@@ -127,9 +127,12 @@ export const Menu: FC<{
     onChange(false);
   }, [t]);
   const deleteChannel = useCallback(async () => {
+    const isYoutube = findIntegration?.providerIdentifier === 'youtube' || findIntegration?.identifier === 'youtube';
     if (
       !(await deleteDialog(
-        t('confirm_channel_local_removal', 'Disconnect this channel and remove its posts from Creatu? Published social posts stay online. Revoke permissions separately in the social network. Full data erasure requires support review.'),
+        isYoutube
+          ? 'Disconnect every Creatu YouTube channel linked to this Google account? Google access for this project will be revoked and Creatu posts removed. Other Google connections may need to be reconnected. Videos already published on YouTube will stay online. Remaining files and backups require a deletion review.'
+          : t('confirm_channel_local_removal', 'Disconnect this channel and remove its posts from Creatu? Published social posts stay online. Revoke permissions separately in the social network. Full data erasure requires support review.'),
         t('delete_channel_title', 'Delete Channel')
       ))
     ) {
@@ -171,10 +174,13 @@ export const Menu: FC<{
         // Silently ignore
       }
     }
-    toast.show(t('channel_disconnected_locally', 'Channel disconnected in Creatu. Revoke its permissions separately in the social network. Full data erasure requires support review.'), 'success');
+    const result = await deleteIntegration.json().catch(() => ({}));
+    toast.show(isYoutube && result.authorizationRevoked
+      ? 'Google access revoked. Linked YouTube channels disconnected. Files and backups remain under deletion review.'
+      : t('channel_disconnected_locally', 'Channel disconnected in Creatu. Revoke its permissions separately in the social network. Full data erasure requires support review.'), 'success');
     setShow(false);
     onChange(true);
-  }, [t, extensionId, id]);
+  }, [t, extensionId, id, findIntegration]);
 
   const enableChannel = useCallback(async () => {
     await fetch('/integrations/enable', {

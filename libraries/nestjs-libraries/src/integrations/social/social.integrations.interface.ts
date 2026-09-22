@@ -65,6 +65,7 @@ export type GenerateAuthUrlResponse = {
 
 export type AuthTokenDetails = {
   id: string;
+  rootId?: string;
   name: string;
   error?: string;
   accessToken: string; // The obtained access token
@@ -163,6 +164,12 @@ export interface SocialProvider
   extends IAuthenticator,
     ISocialMediaIntegration {
   identifier: string;
+  // Providers such as Google can grant access to several channels with one
+  // authorization. Disconnecting any one of them must close the whole grant.
+  authorizationGroup?: (integration: Integration) => string | null;
+  revokeAuthorization?: (accessToken: string, refreshToken?: string | null) => Promise<void>;
+  verifyAuthorization?: (accessToken: string) => Promise<void>;
+  validateContent?: (content: string) => string | null;
   refreshWait?: boolean;
   convertToJPEG?: boolean;
   stripLinks?: () => boolean;

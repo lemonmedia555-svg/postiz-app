@@ -5,7 +5,7 @@ import {
   Inject,
   Injectable,
 } from '@nestjs/common';
-import { ChannelAuthorizationChanged, IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
+import { ChannelAuthorizationChanged, GrantClosedDuringConnection, IntegrationRepository } from '@gitroom/nestjs-libraries/database/prisma/integrations/integration.repository';
 import { IntegrationManager } from '@gitroom/nestjs-libraries/integrations/integration.manager';
 import {
   AnalyticsData,
@@ -114,7 +114,9 @@ export class IntegrationService {
     isBetweenSteps = false,
     refresh?: string,
     timezone?: number,
-    customInstanceDetails?: string
+    customInstanceDetails?: string,
+    oauthCallbackStartedAt?: Date,
+    oauthRootId?: string
   ) {
     const uploadedPicture = picture
       ? picture?.indexOf('imagedelivery.net') > -1
@@ -141,8 +143,19 @@ export class IntegrationService {
       isBetweenSteps,
       refresh,
       timezone,
-      customInstanceDetails
-    );
+      customInstanceDetails,
+      oauthCallbackStartedAt,
+      this._integrationManager.getSocialIntegration(provider)?.verifyAuthorization
+        ? () => this._integrationManager.getSocialIntegration(provider).verifyAuthorization!(token)
+        : undefined,
+      oauthRootId
+    ).catch(err => {
+      if (err instanceof GrantClosedDuringConnection) throw err;
+      if (err instanceof ChannelAuthorizationChanged) {
+        throw new HttpException('Google authorization changed. Please reconnect this channel.', HttpStatus.CONFLICT);
+      }
+      throw err;
+    });
   }
 
   updateIntegrationGroup(org: string, id: string, group: string) {
@@ -223,12 +236,36 @@ export class IntegrationService {
   }
 
   async deleteChannelsForAccount(org: string) {
+    await this._integrationRepository.beginAccountDeletionFence(org);
+    // A Google grant can be shared by channels in several organizations.
+    // Revoke each grant before the account receipt clears stored credentials.
+    const integrations = await this._integrationRepository.getIntegrationsList(org);
+    const grants = new Set<string>();
+    for (const integration of integrations) {
+      const provider = this._integrationManager.getSocialIntegration(integration.providerIdentifier);
+      const root = provider?.revokeAuthorization && provider.authorizationGroup?.(integration);
+      if (!root) continue;
+      const key = `${integration.providerIdentifier}:${root}`;
+      if (grants.has(key)) continue;
+      grants.add(key);
+      await this.removeAuthorizationGroup(integration, 'data-deletion');
+    }
+    const pendingGrants = await this._integrationRepository.getPendingAuthorizationRemovals();
+    if (pendingGrants.some(request => (request.targets as Array<{org:string;revokeAuthorization?:boolean}>)
+      .some(target => target.org === org && target.revokeAuthorization))) {
+      throw new HttpException('Channel revocation is pending; retry account deletion later',
+        HttpStatus.SERVICE_UNAVAILABLE);
+    }
     const request = await this._integrationRepository.getRemoval(`account:${org}`) ||
       await this._integrationRepository.beginRemoval(`account:${org}`, 'data-deletion',
         [], org);
     await this.processRemoval(request.id);
     const result = await this._integrationRepository.getRemovalById(request.id);
     if (result.status === 'pending') throw new HttpException('Account channel cleanup is pending', HttpStatus.SERVICE_UNAVAILABLE);
+  }
+
+  finishAccountDeletionFence(org: string) {
+    return this._integrationRepository.finishAccountDeletionFence(org);
   }
 
   getRemovalStatus(id: string) {
@@ -254,11 +291,26 @@ export class IntegrationService {
         .then(result => { if (!result) ownsLock = false; }).catch(() => { ownsLock = false; });
     }, 30000);
     renewal.unref();
+    let grant = false;
     try {
       const request = await this._integrationRepository.getRemovalById(id);
-      if (!request || request.status !== 'pending' || request.attempts >= 3) return;
-      if (!(await this._integrationRepository.claimRemovalAttempt(id)).count) return;
-      const targets = request.targets as Array<{ id: string; org: string; picture?: string; posts: string[] }>;
+      grant = request?.scope?.startsWith('grant:') || false;
+      if (!request || request.status !== 'pending' || (!grant && request.attempts >= 3)) return;
+      if (!(await this._integrationRepository.claimRemovalAttempt(id, grant)).count) return;
+      const targets = request.targets as Array<{
+        id: string; org: string; picture?: string; posts: string[];
+        providerIdentifier?: string; revokeAuthorization?: boolean;
+      }>;
+      // The local barrier was committed with the receipt. Revoke every grant
+      // before erasing any credential; retries retain disabled credentials.
+      for (const target of targets.filter(item => item.revokeAuthorization)) {
+        if (!ownsLock) throw new Error('Removal lease lost');
+        const integration = await this._integrationRepository.getIntegrationById(target.org, target.id);
+        if (!integration) continue;
+        const provider = this._integrationManager.getSocialIntegration(target.providerIdentifier!);
+        if (!provider?.revokeAuthorization) throw new Error('Provider revocation unavailable');
+        await provider.revokeAuthorization(integration.token, integration.refreshToken);
+      }
       for (const target of targets) {
         if (!ownsLock) throw new Error('Removal lease lost');
         const client = this._temporalService.client.getRawClient();
@@ -299,6 +351,7 @@ export class IntegrationService {
     } catch {
       // Do not persist provider exceptions: their URLs can contain credentials.
       await this._integrationRepository.updateRemoval(id, { lastError: 'Cleanup requires retry or operator review' });
+      if (grant) console.error('Google revocation pending; review request', id);
     } finally {
       clearInterval(renewal);
       await ioRedis.eval('if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end', 1, lockKey, lockValue);
@@ -314,7 +367,8 @@ export class IntegrationService {
     org: string,
     oldInternalId: string,
     newProvider: string,
-    auth: { id: string; username: string }
+    auth: { id: string; username: string },
+    oauthCallbackStartedAt?: Date
   ) {
     const existing = await this._integrationRepository.getIntegrationByInternalId(
       org,
@@ -357,7 +411,8 @@ export class IntegrationService {
       newProvider,
       existing.rootInternalId === existing.internalId
         ? auth.id
-        : existing.rootInternalId
+        : existing.rootInternalId,
+      oauthCallbackStartedAt
     );
   }
 
@@ -369,7 +424,8 @@ export class IntegrationService {
   async migrateIntegrationOnConnect(
     org: string,
     newProvider: string,
-    auth: { id: string; username: string }
+    auth: { id: string; username: string },
+    oauthCallbackStartedAt?: Date
   ) {
     const sources = this._integrationManager.getMigrationSources(newProvider);
     if (
@@ -408,7 +464,8 @@ export class IntegrationService {
       newProvider,
       existing.rootInternalId === existing.internalId
         ? auth.id
-        : existing.rootInternalId
+        : existing.rootInternalId,
+      oauthCallbackStartedAt
     );
   }
 
@@ -467,6 +524,10 @@ export class IntegrationService {
   async deleteChannel(org: string, id: string) {
     const integration = await this.getIntegrationById(org, id);
     if (!integration) throw new HttpException('Channel not found', HttpStatus.NOT_FOUND);
+    const provider = this._integrationManager.getSocialIntegration(integration.providerIdentifier);
+    if (provider?.revokeAuthorization && provider.authorizationGroup?.(integration)) {
+      return this.removeAuthorizationGroup(integration, 'disconnect');
+    }
     const request = await this._integrationRepository.getRemoval(`channel:${id}`) ||
       await this._integrationRepository.beginRemoval(`channel:${id}`, 'disconnect', [integration]).catch(err => {
         if (err instanceof ChannelAuthorizationChanged) {
@@ -482,6 +543,39 @@ export class IntegrationService {
     }
     return { success: true, status: 'disconnected', authorizationRevoked: false,
       erasurePendingReview: true, requestId: request.id };
+  }
+
+  private async removeAuthorizationGroup(integration: Integration, mode: 'disconnect' | 'data-deletion') {
+    const provider = this._integrationManager.getSocialIntegration(integration.providerIdentifier);
+    const root = provider.authorizationGroup?.(integration);
+    if (!root || !provider.revokeAuthorization) throw new Error('Authorization group unavailable');
+    // A reconnect is a new grant, even when the same channel ID is reused.
+    const grantTime = (integration.authorizedAt || integration.createdAt).getTime();
+    const groupHash = createHash('sha256')
+      .update(`${integration.providerIdentifier}:${root}`).digest('hex');
+    const grantHash = createHash('sha256')
+      .update(`${integration.id}:${grantTime}`).digest('hex');
+    const scope = `grant:${groupHash}:${grantHash}`;
+    const request = await this._integrationRepository.getRemoval(scope) ||
+      await this._integrationRepository.beginRemoval(scope, mode, [integration], undefined, {
+        providerIdentifier: integration.providerIdentifier,
+        rootInternalId: root,
+        revokeAuthorization: true,
+      }).catch(err => {
+        if (err instanceof ChannelAuthorizationChanged) {
+          throw new HttpException('This channel was reconnected. Please retry disconnecting it.', HttpStatus.CONFLICT);
+        }
+        throw err;
+      });
+    await this.processRemoval(request.id);
+    const result = await this._integrationRepository.getRemovalById(request.id);
+    if (result.status === 'pending') {
+      throw new HttpException('Channel access stopped. Google revocation or cleanup is pending; contact support with request ' + request.id,
+        HttpStatus.SERVICE_UNAVAILABLE);
+    }
+    return { success: true, status: result.status,
+      authorizationRevoked: true, erasurePendingReview: true,
+      affectedChannels: (result.targets as Array<unknown>).length, requestId: request.id };
   }
 
   async disableIntegrations(org: string, totalChannels: number) {

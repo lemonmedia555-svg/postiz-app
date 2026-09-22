@@ -148,6 +148,13 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                   </div>
                 </>
               )}
+              <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] px-[20px] py-[8px] text-[11px] text-textItemBlur">
+                <a href="https://creatu.io/privacy/" target="_blank" rel="noopener noreferrer" className="hover:underline">Privacy</a>
+                <a href="https://creatu.io/terms/" target="_blank" rel="noopener noreferrer" className="hover:underline">Terms</a>
+                <a href="https://creatu.io/data-deletion/" target="_blank" rel="noopener noreferrer" className="hover:underline">Data deletion</a>
+                <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer" className="hover:underline">YouTube Terms</a>
+                <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline">Google Privacy</a>
+              </div>
             </div>
           </CheckPayment>
         </MantineWrapper>

@@ -65,9 +65,44 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     'https://www.googleapis.com/auth/yt-analytics.readonly',
   ];
 
+  authorizationGroup(integration: Integration): string | null {
+    return integration.rootInternalId || integration.internalId || null;
+  }
+
+  async revokeAuthorization(accessToken: string, refreshToken?: string | null): Promise<void> {
+    const { client } = clientAndYoutube();
+    for (const token of new Set([refreshToken, accessToken].filter(Boolean))) {
+      try {
+        await client.revokeToken(token!);
+        return;
+      } catch (error) {
+        const response = (error as { response?: { status?: number; data?: { error?: string } } })?.response;
+        // A stale refresh token may coexist with a usable access token.
+        if (response?.status === 400 && response?.data?.error === 'invalid_token') continue;
+        // Provider exceptions may include tokens in request URLs.
+        throw new Error('Google authorization revocation failed');
+      }
+    }
+    // Every available credential was already invalid.
+  }
+
+  async verifyAuthorization(accessToken: string): Promise<void> {
+    try {
+      await clientAndYoutube().client.getTokenInfo(accessToken);
+    } catch {
+      throw new Error('Google access token is no longer valid; reconnect the channel');
+    }
+  }
+
   editor = 'normal' as const;
   maxLength() {
     return 5000;
+  }
+
+  validateContent(content: string): string | null {
+    return Buffer.byteLength(content, 'utf8') > 5000
+      ? 'YouTube description must be 5,000 bytes or less (non-English characters use multiple bytes)'
+      : null;
   }
 
   override async checkValidity(
@@ -347,8 +382,8 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         username: channel.snippet?.customUrl || '',
         subscriberCount: channel.statistics?.subscriberCount || '0',
       }));
-    } catch (error) {
-      console.error('Failed to fetch YouTube channels:', error);
+    } catch {
+      console.error('Failed to fetch YouTube channels');
       return [];
     }
   }
@@ -377,9 +412,9 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
         picture: channel.snippet?.thumbnails?.default?.url || '',
         username: channel.snippet?.customUrl || '',
       };
-    } catch (error) {
-      console.error('Failed to fetch YouTube channel information:', error);
-      throw error;
+    } catch {
+      console.error('Failed to fetch YouTube channel information');
+      throw new Error('Failed to fetch YouTube channel information');
     }
   }
 
@@ -548,6 +583,14 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     const [firstPost, ...comments] = postDetails;
 
     const { settings }: { settings: YoutubeSettingsDto } = firstPost;
+    if (settings.communityGuidelinesAccepted !== true) {
+      throw new BadBody(this.identifier, '{}', '{}',
+        'Confirm that your video follows YouTube Community Guidelines before uploading');
+    }
+    if (this.validateContent(firstPost?.message || '')) {
+      throw new BadBody(this.identifier, '{}', '{}',
+        'YouTube description must be 5,000 bytes or less');
+    }
     const path = firstPost?.media?.[0]?.path!;
     const videoSize = await this.youtubeMediaSize(path);
 
@@ -1018,7 +1061,7 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
 
       return result;
     } catch (err) {
-      console.error('Error fetching YouTube post analytics:', err);
+      console.error('Error fetching YouTube post analytics');
       return [];
     }
   }

@@ -9,6 +9,7 @@ import { UploadFactory } from '@gitroom/nestjs-libraries/upload/upload.factory';
 import { PlugDto } from '@gitroom/nestjs-libraries/dtos/plugs/plug.dto';
 
 export class ChannelAuthorizationChanged extends Error {}
+export class GrantClosedDuringConnection extends ChannelAuthorizationChanged {}
 
 @Injectable()
 export class IntegrationRepository {
@@ -23,6 +24,34 @@ export class IntegrationRepository {
     private _transaction: PrismaTransaction,
     private _removal: PrismaRepository<'integrationRemoval' | 'media'>
   ) {}
+
+  private grantPrefix(provider: string, root: string) {
+    return 'grant:' + createHash('sha256').update(`${provider}:${root}`).digest('hex') + ':';
+  }
+
+  private async lockGrant(tx: Prisma.TransactionClient, provider: string, root: string) {
+    const hash = createHash('sha256').update(`${provider}:${root}`).digest('hex');
+    const key = BigInt.asIntN(64, BigInt(`0x${hash.slice(0, 16)}`));
+    await tx.$queryRaw`SELECT 1::int AS locked FROM pg_advisory_xact_lock(${key})`;
+  }
+
+  private async assertGrantOpen(tx: Prisma.TransactionClient, provider: string, root: string,
+    oauthCallbackStartedAt?: Date) {
+    await this.lockGrant(tx, provider, root);
+    const staleGrant = await tx.integrationRemoval.findFirst({ where: {
+      scope: { startsWith: this.grantPrefix(provider, root) },
+      OR: [{ status: 'pending' }, ...(oauthCallbackStartedAt
+        ? [{ createdAt: { gte: oauthCallbackStartedAt } }] : [])],
+    } });
+    if (staleGrant) throw new GrantClosedDuringConnection('Authorization was revoked during connection; reconnect');
+  }
+
+  private async accountDeletionStarted(tx: Prisma.TransactionClient, org: string) {
+    return !!(await tx.integrationRemoval.findFirst({ where: { OR: [
+      { scope: `account:${org}` },
+      { scope: `account-fence:${org}`, status: 'pending' },
+    ] } }));
+  }
 
   getMentions(platform: string, q: string) {
     return this._mentions.model.mentions.findMany({
@@ -165,9 +194,10 @@ export class IntegrationRepository {
 
     return this._transaction.model.$transaction(async tx => {
       const org = expected.organizationId;
+      await this.assertGrantOpen(tx, expected.providerIdentifier, expected.rootInternalId || expected.internalId);
       if (org !== params.organizationId || expected.id !== id) throw new ChannelAuthorizationChanged();
       const account = await tx.organization.updateMany({ where: { id: org, deletedAt: null }, data: { updatedAt: new Date() } });
-      if (!account.count || await tx.integrationRemoval.findUnique({ where: { scope: `account:${org}` } })) {
+      if (!account.count || await this.accountDeletionStarted(tx, org)) {
         throw new ChannelAuthorizationChanged('Account deletion is in progress');
       }
       const current = await tx.integration.updateMany({ where: {
@@ -231,31 +261,82 @@ export class IntegrationRepository {
     return this._removal.model.integrationRemoval.findUnique({ where: { id } });
   }
 
-  pendingRemovals() {
-    return this._removal.model.integrationRemoval.findMany({
-      where: { status: 'pending', attempts: { lt: 3 } }, take: 10,
-      orderBy: { createdAt: 'asc' },
-    });
+  async pendingRemovals() {
+    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    const [ordinary, grants] = await Promise.all([
+      this._removal.model.integrationRemoval.findMany({
+        where: { status: 'pending', attempts: { lt: 3 },
+          NOT: { scope: { startsWith: 'grant:' } }, mode: { not: 'account-fence' } },
+        take: 10, orderBy: { createdAt: 'asc' },
+      }),
+      this._removal.model.integrationRemoval.findMany({
+        where: { status: 'pending', scope: { startsWith: 'grant:' },
+          OR: [{ attempts: { lt: 3 } }, { updatedAt: { lte: oneHourAgo } }] },
+        take: 10, orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+    return [...ordinary, ...grants]
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime()).slice(0, 10);
   }
 
   updateRemoval(id: string, data: Prisma.IntegrationRemovalUpdateInput) {
     return this._removal.model.integrationRemoval.updateMany({ where: { id, status: 'pending' }, data });
   }
 
-  claimRemovalAttempt(id: string) {
+  claimRemovalAttempt(id: string, grant = false) {
     return this._removal.model.integrationRemoval.updateMany({
-      where: { id, status: 'pending', attempts: { lt: 3 } }, data: { attempts: { increment: 1 } },
+      where: { id, status: 'pending', ...(grant ? {} : { attempts: { lt: 3 } }) },
+      data: { attempts: { increment: 1 } },
     });
   }
 
-  async beginRemoval(scope: string, mode: string, integrations: Integration[], closeOrganization?: string) {
+  async beginAccountDeletionFence(org: string) {
+    return this._transaction.model.$transaction(async tx => {
+      await tx.organization.update({ where: { id: org }, data: { updatedAt: new Date() } });
+      const scope = `account-fence:${org}`;
+      return await tx.integrationRemoval.findUnique({ where: { scope } }) ||
+        tx.integrationRemoval.create({ data: {
+          id: makeId(32), scope, mode: 'account-fence', targets: [],
+        } });
+    });
+  }
+
+  finishAccountDeletionFence(org: string) {
+    return this._removal.model.integrationRemoval.updateMany({
+      where: { scope: `account-fence:${org}`, status: 'pending' },
+      data: { status: 'active_data_deleted_pending_review' },
+    });
+  }
+
+  async beginRemoval(scope: string, mode: string, integrations: Integration[], closeOrganization?: string,
+    authorizationGroup?: { providerIdentifier: string; rootInternalId: string; revokeAuthorization: boolean }) {
     return this._transaction.model.$transaction(async (tx) => {
+      if (authorizationGroup) {
+        await this.lockGrant(tx, authorizationGroup.providerIdentifier, authorizationGroup.rootInternalId);
+      }
       if (closeOrganization) {
         await tx.organization.update({ where: { id: closeOrganization }, data: { updatedAt: new Date() } });
         integrations = await tx.integration.findMany({ where: { organizationId: closeOrganization } });
       }
       const existing = await tx.integrationRemoval.findUnique({ where: { scope } });
       if (existing) return existing;
+      if (authorizationGroup) {
+        const requested = await tx.integration.findFirst({ where: {
+          id: integrations[0]?.id, organizationId: integrations[0]?.organizationId,
+          providerIdentifier: authorizationGroup.providerIdentifier,
+          rootInternalId: authorizationGroup.rootInternalId,
+          deletedAt: null,
+        } });
+        if (!requested || (requested.authorizedAt || requested.createdAt).getTime() !==
+            (integrations[0].authorizedAt || integrations[0].createdAt).getTime()) {
+          throw new ChannelAuthorizationChanged('Channel reconnected; retry removal');
+        }
+        integrations = await tx.integration.findMany({ where: {
+          providerIdentifier: authorizationGroup.providerIdentifier,
+          rootInternalId: authorizationGroup.rootInternalId,
+          deletedAt: null,
+        } });
+      }
       const targets = [];
       for (const integration of integrations) {
         const current = await tx.integration.findFirst({
@@ -272,14 +353,21 @@ export class IntegrationRepository {
           where: { integrationId: current.id, organizationId: current.organizationId },
           select: { id: true },
         });
+        const revokeAuthorization = !!authorizationGroup?.revokeAuthorization &&
+          current.providerIdentifier === authorizationGroup.providerIdentifier &&
+          !!(current.refreshToken || current.token);
         targets.push({ id: current.id, org: current.organizationId,
-          picture: current.picture, posts: posts.map(p => p.id) });
+          picture: current.picture, posts: posts.map(p => p.id),
+          providerIdentifier: current.providerIdentifier, revokeAuthorization });
         const root = current.rootInternalId || current.internalId;
         const tombstone = /^[a-f0-9]{32}$/.test(root) ? root : createHash('md5').update(root).digest('hex');
-        // Commit the barrier with the durable receipt. Never retain a usable
-        // credential while waiting for a cache, workflow or storage retry.
+        // Commit the barrier with the durable receipt. A provider that requires
+        // remote revocation keeps credentials only while disabled so a failed
+        // Google request can be retried; all other credentials are cleared now.
         await tx.integration.update({ where: { id: current.id }, data: {
-          disabled: true, deletedAt: new Date(), token: '', refreshToken: null,
+          disabled: true, deletedAt: new Date(),
+          token: revokeAuthorization ? current.token : '',
+          refreshToken: revokeAuthorization ? current.refreshToken : null,
           tokenExpiration: null, refreshNeeded: false,
           internalId: `deleted_${current.id}`, rootInternalId: tombstone,
         } });
@@ -291,7 +379,9 @@ export class IntegrationRepository {
       return tx.integrationRemoval.create({ data: {
         id: makeId(32), scope, mode, targets,
       } });
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    }, { isolationLevel: authorizationGroup
+      ? Prisma.TransactionIsolationLevel.ReadCommitted
+      : Prisma.TransactionIsolationLevel.Serializable });
   }
 
   async eraseChannelRecords(org: string, id: string) {
@@ -355,6 +445,8 @@ export class IntegrationRepository {
   async updateRefreshedCredentials(integration: Integration, accessToken: string,
     refreshToken?: string, expiresIn?: number, oneTimeToken = false) {
     return this._transaction.model.$transaction(async tx => {
+      await this.assertGrantOpen(tx, integration.providerIdentifier,
+        integration.rootInternalId || integration.internalId);
       const data = { token: accessToken, refreshToken: refreshToken || null,
         ...(expiresIn ? { tokenExpiration: new Date(Date.now() + expiresIn * 1000) } : {}),
         refreshNeeded: false };
@@ -392,11 +484,13 @@ export class IntegrationRepository {
     id: string,
     internalId: string,
     providerIdentifier: string,
-    rootInternalId: string
+    rootInternalId: string,
+    oauthCallbackStartedAt?: Date
   ) {
     return this._transaction.model.$transaction(async tx => {
+    await this.assertGrantOpen(tx, providerIdentifier, rootInternalId, oauthCallbackStartedAt);
     const account = await tx.organization.updateMany({ where: { id: org, deletedAt: null }, data: { updatedAt: new Date() } });
-    if (!account.count || await tx.integrationRemoval.findUnique({ where: { scope: `account:${org}` } })) {
+    if (!account.count || await this.accountDeletionStarted(tx, org)) {
       throw new ChannelAuthorizationChanged('Account deletion is in progress');
     }
     const current = await tx.integration.updateMany({ where: { id, organizationId: org, deletedAt: null }, data: { updatedAt: new Date() } });
@@ -443,14 +537,16 @@ export class IntegrationRepository {
 
   async createOrUpdateIntegration(...args: Parameters<IntegrationRepository['writeIntegration']>) {
     return this._transaction.model.$transaction(async tx => {
+      await this.assertGrantOpen(tx, args[7], args[18] || args[6], args[16]);
       const org = args[2];
       const active = await tx.organization.updateMany({ where: { id: org, deletedAt: null }, data: { updatedAt: new Date() } });
-      if (!active.count || await tx.integrationRemoval.findUnique({ where: { scope: `account:${org}` } })) {
+      if (!active.count || await this.accountDeletionStarted(tx, org)) {
         throw new Error('Account deletion is in progress');
       }
+      if (args[17]) await args[17]();
       const model = { model: tx } as any;
       return new IntegrationRepository(model, model, model, model, model, model, this._transaction, model).writeIntegration(...args);
-    });
+    }, { timeout: 15000 });
   }
 
   private async writeIntegration(
@@ -477,7 +573,10 @@ export class IntegrationRepository {
     isBetweenSteps = false,
     refresh?: string,
     timezone?: number,
-    customInstanceDetails?: string
+    customInstanceDetails?: string,
+    oauthCallbackStartedAt?: Date,
+    verifyAuthorization?: () => Promise<void>,
+    oauthRootId?: string
   ) {
     const postTimes = timezone
       ? {
@@ -512,7 +611,7 @@ export class IntegrationRepository {
         ...postTimes,
         organizationId: org,
         refreshNeeded: false,
-        rootInternalId: internalId,
+        rootInternalId: oauthRootId || internalId,
         ...(customInstanceDetails ? { customInstanceDetails } : {}),
         additionalSettings: additionalSettings
           ? JSON.stringify(additionalSettings)
@@ -533,6 +632,7 @@ export class IntegrationRepository {
         ...(picture ? { picture } : {}),
         profile: username,
         providerIdentifier: provider,
+        ...(oauthRootId ? { rootInternalId: oauthRootId } : {}),
         token,
         refreshToken,
         ...(expiresIn
@@ -756,6 +856,12 @@ export class IntegrationRepository {
 
   getAllChannelsForRemoval(org: string) {
     return this._integration.model.integration.findMany({ where: { organizationId: org } });
+  }
+
+  getPendingAuthorizationRemovals() {
+    return this._removal.model.integrationRemoval.findMany({
+      where: { status: 'pending', scope: { startsWith: 'grant:' } },
+    });
   }
 
   async disableChannel(org: string, id: string) {

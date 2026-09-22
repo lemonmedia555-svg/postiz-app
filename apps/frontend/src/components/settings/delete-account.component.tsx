@@ -21,8 +21,8 @@ const DeleteAccountComponent: FC<{ isLink?: boolean }> = ({ isLink }) => {
     if (
       !(await deleteDialog(
         t(
-          'confirm_account_local_removal',
-          'Close your account and stop channel access in Creatu? Published social posts stay online. Revoke permissions separately in each social network. Full data erasure, including files and backups, requires support review.'
+          'confirm_account_google_removal',
+          'Close your account? Creatu will revoke Google access for your connected YouTube channels. This can disconnect other YouTube channels linked to the same Google account, even in another workspace; other Google services in this project may require reconnection. Published videos and posts stay online. Revoke access to other social networks separately. Files and backups require deletion review.'
         ),
         t('yes_delete_my_account', 'Yes, delete my account')
       ))
@@ -98,8 +98,8 @@ const DeleteAccountComponent: FC<{ isLink?: boolean }> = ({ isLink }) => {
           </div>
           <div className="text-[12px] text-textItemBlur">
             {t(
-              'delete_account_removal_description',
-              'This closes your account and stops channel access in Creatu. Revoke permissions separately in each social network. Full data erasure, including files and backups, requires support review.'
+              'delete_account_google_removal_description',
+              'Account deletion revokes Google access for connected YouTube channels, including linked channels in other workspaces. Other Google services may need reconnection. Revoke access to other social networks separately. Files and backups require deletion review.'
             )}
           </div>
         </div>

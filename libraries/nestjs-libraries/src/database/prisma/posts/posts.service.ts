@@ -833,6 +833,18 @@ export class PostsService {
         } catch (err: any) {
           errors = err?.message || 'Invalid media';
         }
+        if (errors === true && provider.validateContent) {
+          const contentError = (post.value || [])
+            .map(item => {
+              const raw = item.content || '';
+              return provider.validateContent(stripHtmlValidation(
+                provider.editor || 'normal', raw, true, false,
+                !/<\/?[a-z][\s\S]*>/i.test(raw), provider.mentionFormat
+              ));
+            })
+            .find(Boolean);
+          if (contentError) errors = contentError;
+        }
 
         const maximumCharacters = provider.maxLength(additionalSettings, settings);
         const isX = integration.providerIdentifier === 'x';

@@ -12,6 +12,7 @@ import { MediumTags } from '@gitroom/frontend/components/new-launch/providers/me
 import { MediaComponent } from '@gitroom/frontend/components/media/media.component';
 import { Select } from '@gitroom/react/form/select';
 import { YoutubePreview } from '@gitroom/frontend/components/new-launch/providers/youtube/youtube.preview';
+import { Checkbox } from '@gitroom/react/form/checkbox';
 const type = [
   {
     label: 'Public',
@@ -38,7 +39,7 @@ const madeForKids = [
   },
 ];
 const YoutubeSettings: FC = () => {
-  const { register, control } = useSettings();
+  const { register, control, formState } = useSettings();
   return (
     <div className="flex flex-col">
       <Input label="Title" {...register('title')} maxLength={100} />
@@ -66,6 +67,17 @@ const YoutubeSettings: FC = () => {
           </option>
         ))}
       </Select>
+      <div className="my-[16px] text-[13px]">
+        <Checkbox variant="hollow" label="I confirm that this video follows YouTube Community Guidelines"
+          {...register('communityGuidelinesAccepted', { value: false })} />
+        {formState.errors.communityGuidelinesAccepted && (
+          <div className="ml-[34px] text-red-500">Confirm this before publishing or scheduling.</div>
+        )}
+        <a href="https://www.youtube.com/howyoutubeworks/policies/community-guidelines/"
+          target="_blank" rel="noopener noreferrer" className="underline ml-[34px]">
+          Read YouTube Community Guidelines
+        </a>
+      </div>
       <MediumTags label="Tags" {...register('tags')} />
       <div className="mt-[20px]">
         <MediaComponent

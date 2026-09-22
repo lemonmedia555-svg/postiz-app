@@ -1,6 +1,7 @@
 import {
   IsArray,
   IsDefined,
+  Equals,
   IsIn,
   IsOptional,
   IsString,
@@ -77,6 +78,9 @@ export class YoutubeSettingsDto {
   @IsIn(['yes', 'no'])
   @IsOptional()
   selfDeclaredMadeForKids: 'no' | 'yes';
+
+  @Equals(true, { message: 'Confirm that your video follows YouTube Community Guidelines' })
+  communityGuidelinesAccepted: boolean;
 
   @IsOptional()
   @ValidateNested()

@@ -113,6 +113,7 @@ export class UsersService {
       if (org.users[0].role === Role.SUPERADMIN) {
         await this._integrationService.deleteChannelsForAccount(org.id);
         await this._organizationRepository.deleteOrganization(org.id);
+        await this._integrationService.finishAccountDeletionFence(org.id);
       } else {
         await this._organizationRepository.deleteTeamMember(org.id, userId);
       }

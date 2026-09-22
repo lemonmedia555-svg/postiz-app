@@ -33,7 +33,7 @@ const channelData = () => ({
   id: channel, organizationId: org, providerIdentifier: 'instagram-standalone',
   internalId: 'qa_provider_id', rootInternalId: 'qa_provider_id',
   token: 'qa-not-a-real-token', refreshToken: 'qa-not-a-real-refresh',
-  disabled: false, deletedAt: null,
+  disabled: false, deletedAt: null, authorizedAt: new Date('2026-09-01T00:00:00Z'),
 });
 
 describe('IntegrationService removal with isolated dependencies', () => {
@@ -57,6 +57,10 @@ describe('IntegrationService removal with isolated dependencies', () => {
     repository = {
       getIntegrationById: jest.fn(async () => channelData()),
       getRemoval: jest.fn(async () => null),
+      getIntegrationsList: jest.fn(async () => []),
+      getPendingAuthorizationRemovals: jest.fn(async () => []),
+      beginAccountDeletionFence: jest.fn(async () => ({})),
+      finishAccountDeletionFence: jest.fn(async () => ({})),
       beginRemoval: jest.fn(async () => receipt),
       getRemovalById: jest.fn(async () => ({ ...receipt })),
       claimRemovalAttempt: jest.fn(async () => {
@@ -130,6 +134,60 @@ describe('IntegrationService removal with isolated dependencies', () => {
     expect(receipt.status).toBe('disconnected');
     expect(storage.removePublicFile).not.toHaveBeenCalled();
     expect(receipt.targets[0].picture).toBe('https://example.invalid/shared.png');
+  });
+
+  test('disconnecting a Google grant revokes every linked channel before erasing either one', async () => {
+    const second = { ...channelData(), id: 'qa_channel_b', organizationId: 'qa_org_b',
+      providerIdentifier: 'youtube', rootInternalId: 'qa_google_user' };
+    const first = { ...channelData(), providerIdentifier: 'youtube', rootInternalId: 'qa_google_user' };
+    const revokeAuthorization = jest.fn(async () => undefined);
+    manager.getSocialIntegration.mockReturnValue({
+      authorizationGroup: (item: any) => item.rootInternalId,
+      revokeAuthorization,
+    });
+    repository.getIntegrationById.mockImplementation(async (targetOrg: string, targetId: string) =>
+      targetOrg === org && targetId === channel ? first : second);
+    receipt.targets = [
+      { id: channel, org, posts: [], providerIdentifier: 'youtube', revokeAuthorization: true },
+      { id: second.id, org: second.organizationId, posts: [], providerIdentifier: 'youtube', revokeAuthorization: true },
+    ];
+
+    await expect(service.deleteChannel(org, channel)).resolves.toMatchObject({
+      authorizationRevoked: true, affectedChannels: 2, status: 'disconnected',
+    });
+    expect(repository.beginRemoval).toHaveBeenCalledWith(expect.stringMatching(/^grant:/),
+      'disconnect', [first], undefined, {
+        providerIdentifier: 'youtube', rootInternalId: 'qa_google_user', revokeAuthorization: true,
+      });
+    expect(revokeAuthorization).toHaveBeenCalledTimes(2);
+    expect(Math.max(...revokeAuthorization.mock.invocationCallOrder))
+      .toBeLessThan(Math.min(...repository.eraseChannelRecords.mock.invocationCallOrder));
+  });
+
+  test('a failed Google revoke leaves the whole group disabled and pending for retry', async () => {
+    const first = { ...channelData(), providerIdentifier: 'youtube', rootInternalId: 'qa_google_user' };
+    manager.getSocialIntegration.mockReturnValue({
+      authorizationGroup: (item: any) => item.rootInternalId,
+      revokeAuthorization: jest.fn(async () => { throw new Error('qa-provider-token-secret'); }),
+    });
+    repository.getIntegrationById.mockResolvedValue(first);
+    receipt.targets = [{ id: channel, org, posts: [], providerIdentifier: 'youtube', revokeAuthorization: true }];
+    const error = await service.deleteChannel(org, channel).catch(err => err);
+    expect(error.getStatus()).toBe(HttpStatus.SERVICE_UNAVAILABLE);
+    expect(repository.eraseChannelRecords).not.toHaveBeenCalled();
+    expect(receipt).toMatchObject({ status: 'pending', lastError: retryError });
+    expect(JSON.stringify(repository.updateRemoval.mock.calls)).not.toContain('qa-provider-token-secret');
+  });
+
+  test('account deletion commits its OAuth fence before selecting channels', async () => {
+    receipt.mode = 'data-deletion';
+    await service.deleteChannelsForAccount(org);
+    expect(repository.beginAccountDeletionFence).toHaveBeenCalledWith(org);
+    expect(repository.getIntegrationsList).toHaveBeenCalledWith(org);
+    expect(repository.beginAccountDeletionFence.mock.invocationCallOrder[0])
+      .toBeLessThan(repository.getIntegrationsList.mock.invocationCallOrder[0]);
+    expect(repository.beginRemoval).toHaveBeenCalledWith(`account:${org}`, 'data-deletion', [], org);
+    expect(repository.finishAccountDeletionFence).not.toHaveBeenCalled();
   });
 
   test('deleteChannel reuses the durable request rather than widening its targets', async () => {
