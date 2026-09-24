@@ -543,7 +543,10 @@ export class IntegrationService {
             const stored = JSON.parse(channel.customInstanceDetails || '{}');
             if (typeof stored.youtubeDataRefreshedAt === 'string') {
               const parsed = new Date(stored.youtubeDataRefreshedAt);
-              if (!Number.isNaN(parsed.getTime())) lastGood = parsed;
+              if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > lastGood.getTime() &&
+                  parsed.getTime() <= Date.now()) {
+                lastGood = parsed;
+              }
             }
           } catch { /* Treat invalid metadata as stale. */ }
           if (lastGood.getTime() <= Date.now() - 29 * 24 * 60 * 60 * 1000) {
