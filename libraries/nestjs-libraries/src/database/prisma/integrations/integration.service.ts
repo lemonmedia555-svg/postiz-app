@@ -522,6 +522,21 @@ export class IntegrationService {
           const metadata = await this.withActiveIntegration(current, () =>
             provider.fetchPageInformation!(current.token, { id: current.internalId }));
           if (metadata.id !== current.internalId) throw new Error('YouTube channel changed');
+          const posts = await this._integrationRepository.youtubePublishedVideos(current);
+          if (posts.length) {
+            const videoIds = [...new Set(posts.map(post => post.releaseId).filter((id): id is string => !!id))];
+            const youtube = provider as SocialProvider & {
+              existingVideoIds: (token: string, ids: string[]) => Promise<Set<string>>;
+            };
+            const existing = await this.withActiveIntegration(current, () =>
+              youtube.existingVideoIds(current.token, videoIds));
+            await this.assertActive(current);
+            for (const post of posts) {
+              if (post.releaseId && !existing.has(post.releaseId)) {
+                await this._integrationRepository.clearMissingYoutubeVideo(current, post.id, post.releaseId);
+              }
+            }
+          }
           const saved = await this._integrationRepository.updateYoutubeChannelMetadata(current, metadata);
           // The connection flow copied Google's avatar into local uploads.
           // Once the live URL is refreshed, erase that obsolete local copy if

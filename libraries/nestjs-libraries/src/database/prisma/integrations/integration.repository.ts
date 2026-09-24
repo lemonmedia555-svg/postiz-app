@@ -700,6 +700,22 @@ export class IntegrationRepository {
     });
   }
 
+  youtubePublishedVideos(integration: Integration) {
+    return this._posts.model.post.findMany({
+      where: { organizationId: integration.organizationId, integrationId: integration.id,
+        deletedAt: null, releaseId: { not: null } },
+      select: { id: true, releaseId: true },
+    });
+  }
+
+  clearMissingYoutubeVideo(integration: Integration, postId: string, videoId: string) {
+    return this._posts.model.post.updateMany({
+      where: { id: postId, organizationId: integration.organizationId,
+        integrationId: integration.id, releaseId: videoId },
+      data: { releaseId: null, releaseURL: null },
+    });
+  }
+
   updateYoutubeChannelMetadata(integration: Integration, data: { name: string; picture: string; username: string }) {
     return this._integration.model.integration.updateMany({
       where: { id: integration.id, organizationId: integration.organizationId,

@@ -418,6 +418,21 @@ export class YoutubeProvider extends SocialAbstract implements SocialProvider {
     }
   }
 
+  async existingVideoIds(accessToken: string, ids: string[]): Promise<Set<string>> {
+    const { client, youtube } = clientAndYoutube();
+    client.setCredentials({ access_token: accessToken });
+    const existing = new Set<string>();
+    for (let start = 0; start < ids.length; start += 50) {
+      const response = await youtube(client).videos.list({
+        part: ['snippet'], id: ids.slice(start, start + 50), maxResults: 50,
+      });
+      for (const video of response.data.items || []) {
+        if (video.id) existing.add(video.id);
+      }
+    }
+    return existing;
+  }
+
   async reConnect(
     id: string,
     requiredId: string,
