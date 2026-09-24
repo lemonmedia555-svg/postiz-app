@@ -6,6 +6,7 @@ import { capitalize, orderBy } from 'lodash';
 import clsx from 'clsx';
 import ImageWithFallback from '@gitroom/react/helpers/image.with.fallback';
 import SafeImage from '@gitroom/react/helpers/safe.image';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { Select } from '@gitroom/react/form/select';
 import { Button } from '@gitroom/react/form/button';
@@ -200,13 +201,13 @@ export const Plugs = () => {
                   width={36}
                   height={36}
                 />
-                <SafeImage
-                  src={`/icons/platforms/${integration.identifier}.png`}
-                  className="rounded-[8px] absolute z-10 bottom-[5px] -end-[5px] border border-fifth"
-                  alt={integration.identifier}
-                  width={18.41}
-                  height={18.41}
-                />
+                {integration.identifier === 'youtube' ? (
+                  <YoutubeBrandIcon className="absolute z-10 -bottom-[5px] -end-[8px]" />
+                ) : (
+                  <SafeImage src={`/icons/platforms/${integration.identifier}.png`}
+                    className="rounded-[8px] absolute z-10 bottom-[5px] -end-[5px] border border-fifth"
+                    alt={integration.identifier} width={18.41} height={18.41} />
+                )}
               </div>
               <div
                 className={clsx(

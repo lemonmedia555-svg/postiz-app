@@ -719,7 +719,7 @@ export const AddProviderComponent: FC<{
               >
                 <div>
                   {item.identifier === 'youtube' ? (
-                    <img src={`/icons/platforms/youtube.svg`} />
+                    <img src="/icons/platforms/youtube.png" alt="YouTube" width={48} height={42} className="h-[42px] w-[48px] max-w-none object-contain" />
                   ) : (
                     <img
                       className={clsx(

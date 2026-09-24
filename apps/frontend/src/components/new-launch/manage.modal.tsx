@@ -10,6 +10,7 @@ import React, {
   useState,
 } from 'react';
 import { AddEditModalProps } from '@gitroom/frontend/components/new-launch/add.edit.modal';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import clsx from 'clsx';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { PicksSocialsComponent } from '@gitroom/frontend/components/new-launch/picks.socials.component';
@@ -114,11 +115,12 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
     return (
       <div className="flex items-center gap-[10px]">
         <div className="relative">
-          <img
-            src={`/icons/platforms/${currentIntegration.identifier}.png`}
-            className="w-[20px] h-[20px] rounded-[4px]"
-            alt={currentIntegration.identifier}
-          />
+          {currentIntegration.identifier === 'youtube' ? (
+            <YoutubeBrandIcon />
+          ) : (
+            <img src={`/icons/platforms/${currentIntegration.identifier}.png`}
+              className="w-[20px] h-[20px] rounded-[4px]" alt={currentIntegration.identifier} />
+          )}
           <SettingsIcon
             size={15}
             className="text-white absolute -end-[5px] -bottom-[5px]"

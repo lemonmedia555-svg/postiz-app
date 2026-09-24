@@ -5,6 +5,7 @@ import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { useShallow } from 'zustand/react/shallow';
 import clsx from 'clsx';
 import SafeImage from '@gitroom/react/helpers/safe.image';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import { capitalize } from 'lodash';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { hasLinks } from '@gitroom/helpers/utils/strip.links';
@@ -224,13 +225,14 @@ export const InformationComponent: FC<{
               {selectedIntegrations.map((p, index) => (
                 <Fragment key={p.integration.id}>
                   <div>
-                    <SafeImage
-                      src={`/icons/platforms/${p.integration.identifier}.png`}
-                      alt={p.integration.name}
-                      className="rounded-[4px] w-[16px] h-[16px] min-w-[16px] min-h-[16px]"
-                      width={16}
-                      height={16}
-                    />
+                    {p.integration.identifier === 'youtube' ? (
+                      <YoutubeBrandIcon />
+                    ) : (
+                      <SafeImage src={`/icons/platforms/${p.integration.identifier}.png`}
+                        alt={p.integration.name}
+                        className="rounded-[4px] w-[16px] h-[16px] min-w-[16px] min-h-[16px]"
+                        width={16} height={16} />
+                    )}
                   </div>
                   <div
                     className={clsx(

@@ -13,6 +13,7 @@ import { CopyClient } from '@gitroom/frontend/components/preview/copy.client';
 import { getT } from '@gitroom/react/translation/get.translation.service.backend';
 import { RenderPreviewDateClient } from '@gitroom/frontend/components/preview/render.preview.date.client';
 import { CreationMethodBadge } from '@gitroom/frontend/components/launches/creation.method.badge';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 
 dayjs.extend(utc);
 export const metadata: Metadata = {
@@ -126,12 +127,16 @@ export default async function Auth(
                           src={post[0].integration.picture}
                         />
                       </div>
-                      <div className="absolute -end-[5px] -bottom-[5px] w-[30px] h-[30px] z-[20]">
-                        <img
-                          className="w-full h-full bg-black aspect-square rounded-full border-tableBorder"
-                          alt={post[0].integration.providerIdentifier}
-                          src={`/icons/platforms/${post[0].integration.providerIdentifier}.png`}
-                        />
+                      <div className={post[0].integration.providerIdentifier === 'youtube'
+                        ? 'absolute -end-[14px] -bottom-[8px] z-[20]'
+                        : 'absolute -end-[5px] -bottom-[5px] w-[30px] h-[30px] z-[20]'}>
+                        {post[0].integration.providerIdentifier === 'youtube' ? (
+                          <YoutubeBrandIcon />
+                        ) : (
+                          <img className="w-full h-full bg-black aspect-square rounded-full border-tableBorder"
+                            alt={post[0].integration.providerIdentifier}
+                            src={`/icons/platforms/${post[0].integration.providerIdentifier}.png`} />
+                        )}
                       </div>
                     </div>
                   </div>

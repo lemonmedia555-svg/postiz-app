@@ -32,6 +32,7 @@ import 'dayjs/locale/vi';
 import localizedFormat from 'dayjs/plugin/localizedFormat';
 import { useModals } from '@gitroom/frontend/components/layout/new-modal';
 import clsx from 'clsx';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import { useFetch } from '@gitroom/helpers/utils/custom.fetch';
 import { ExistingDataContextProvider } from '@gitroom/frontend/components/launches/helpers/use.existing.data';
 import { useDrag, useDrop } from 'react-dnd';
@@ -958,11 +959,7 @@ export const CalendarColumn: FC<{
                           height={32}
                         />
                         {selectedIntegrations.identifier === 'youtube' ? (
-                          <img
-                            src="/icons/platforms/youtube.svg"
-                            className="absolute z-10 -bottom-[5px] -end-[5px]"
-                            width={20}
-                          />
+                          <YoutubeBrandIcon className="absolute z-10 -bottom-[12px] -end-[8px]" />
                         ) : (
                           <SafeImage
                             src={`/icons/platforms/${selectedIntegrations.identifier}.png`}
@@ -1160,16 +1157,16 @@ const CalendarItem: FC<{
           isBeforeNow && '!grayscale'
         )}
       >
-        <div className={clsx('relative min-w-[20px]')}>
-          <img
-            className="w-[20px] h-[20px] rounded-[8px]"
-            src={post.integration.picture! || '/no-picture.jpg'}
-          />
-          <img
-            className="w-[12px] h-[12px] rounded-[8px] absolute z-10 top-[10px] end-0 border border-fifth"
-            src={`/icons/platforms/${post.integration?.providerIdentifier}.png`}
-          />
-        </div>
+        {post.integration?.providerIdentifier === 'youtube' ? (
+          <YoutubeBrandIcon />
+        ) : (
+          <div className={clsx('relative min-w-[20px]')}>
+            <img className="w-[20px] h-[20px] rounded-[8px]"
+              src={post.integration.picture! || '/no-picture.jpg'} />
+            <img className="w-[12px] h-[12px] rounded-[8px] absolute z-10 top-[10px] end-0 border border-fifth"
+              src={`/icons/platforms/${post.integration?.providerIdentifier}.png`} />
+          </div>
+        )}
         <div className="w-full flex-1 flex flex-col min-h-[40px]">
           <div className="text-start">
             {state === 'DRAFT' ? t('draft', 'Draft') + ': ' : ''}

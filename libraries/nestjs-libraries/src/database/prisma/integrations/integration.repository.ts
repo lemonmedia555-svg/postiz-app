@@ -694,6 +694,21 @@ export class IntegrationRepository {
     });
   }
 
+  activeYoutubeChannels() {
+    return this._integration.model.integration.findMany({
+      where: { providerIdentifier: 'youtube', deletedAt: null, disabled: false, inBetweenSteps: false },
+    });
+  }
+
+  updateYoutubeChannelMetadata(integration: Integration, data: { name: string; picture: string; username: string }) {
+    return this._integration.model.integration.updateMany({
+      where: { id: integration.id, organizationId: integration.organizationId,
+        providerIdentifier: 'youtube', deletedAt: null, disabled: false, token: integration.token },
+      data: { name: data.name, picture: data.picture || null, profile: data.username || null,
+        customInstanceDetails: JSON.stringify({ youtubeDataRefreshedAt: new Date().toISOString() }) },
+    });
+  }
+
   async setBetweenRefreshSteps(id: string) {
     return this._integration.model.integration.updateMany({
       where: {

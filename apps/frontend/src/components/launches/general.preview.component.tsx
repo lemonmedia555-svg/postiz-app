@@ -5,6 +5,7 @@ import { VideoOrImage } from '@gitroom/react/helpers/video.or.image';
 import { FC } from 'react';
 import { textSlicer } from '@gitroom/helpers/utils/count.length';
 import SafeImage from '@gitroom/react/helpers/safe.image';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import { useLaunchStore } from '@gitroom/frontend/components/new-launch/store';
 import { stripHtmlValidation } from '@gitroom/helpers/utils/strip.html.validation';
 
@@ -72,15 +73,13 @@ export const GeneralPreviewComponent: FC<{
                   className="rounded-full relative z-[2]"
                 />
 
-                {current !== 'global' && (
-                  <SafeImage
-                    src={`/icons/platforms/${integration?.identifier}.png`}
+                {current !== 'global' && (integration?.identifier === 'youtube' ? (
+                  <YoutubeBrandIcon className="absolute z-10 -bottom-[9px] -end-[8px]" />
+                ) : (
+                  <SafeImage src={`/icons/platforms/${integration?.identifier}.png`}
                     className="min-w-[20px] min-h-[20px] rounded-full absolute z-10 -bottom-[5px] -end-[5px] border border-fifth"
-                    alt={integration.identifier}
-                    width={20}
-                    height={20}
-                  />
-                )}
+                    alt={integration.identifier} width={20} height={20} />
+                ))}
               </div>
               {index !== topValue.length - 1 && (
                 <div className="flex-1 w-[2px] h-[calc(100%-10px)] bg-customColor25 absolute top-[10px] z-[1]" />

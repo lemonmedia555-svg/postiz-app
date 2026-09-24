@@ -3,6 +3,7 @@
 import { AddProviderButton } from '@gitroom/frontend/components/launches/add.provider.component';
 import { FC, useCallback, useEffect, useMemo, useState } from 'react';
 import SafeImage from '@gitroom/react/helpers/safe.image';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import { capitalize, groupBy, orderBy } from 'lodash';
 import { CalendarWeekProvider } from '@gitroom/frontend/components/launches/calendar.context';
 import { Filters } from '@gitroom/frontend/components/launches/filters';
@@ -297,11 +298,7 @@ export const MenuComponent: FC<
           height={36}
         />
         {integration.identifier === 'youtube' ? (
-          <img
-            src="/icons/platforms/youtube.svg"
-            className="absolute z-10 bottom-[5px] -end-[5px]"
-            width={20}
-          />
+          <YoutubeBrandIcon className="absolute z-10 -bottom-[5px] -end-[8px]" />
         ) : (
           <SafeImage
             src={`/icons/platforms/${integration.identifier}.png`}

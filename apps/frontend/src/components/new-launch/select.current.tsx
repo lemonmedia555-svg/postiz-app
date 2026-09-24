@@ -9,6 +9,7 @@ import clsx from 'clsx';
 import SafeImage from '@gitroom/react/helpers/safe.image';
 import { useShallow } from 'zustand/react/shallow';
 import { GlobalIcon } from '@gitroom/frontend/components/ui/icons';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import { Integrations } from '@gitroom/frontend/components/launches/calendar.context';
 import {
@@ -160,11 +161,7 @@ export const SelectCurrent: FC = () => {
                   }}
                 />
                 {integration.identifier === 'youtube' ? (
-                  <img
-                    src="/icons/platforms/youtube.svg"
-                    className="absolute z-10 bottom-[2px] end-[2px] min-w-[12px]"
-                    width={12}
-                  />
+                  <YoutubeBrandIcon className="absolute z-10 -bottom-[11px] -end-[9px]" />
                 ) : (
                   <SafeImage
                     src={`/icons/platforms/${integration.identifier}.png`}

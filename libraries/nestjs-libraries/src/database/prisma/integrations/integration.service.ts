@@ -499,6 +499,66 @@ export class IntegrationService {
     }
   }
 
+  // YouTube channel metadata is API Data. Recheck it daily and never keep an
+  // unrefreshable copy beyond the 30-day limit in III.E.4.c.
+  @Cron('0 4 * * *')
+  async refreshYoutubeChannelData() {
+    const lock = 'youtube-channel-data-refresh';
+    if (!(await ioRedis.set(lock, '1', 'EX', 60 * 60 * 6, 'NX'))) return;
+    try {
+      for (const channel of await this._integrationRepository.activeYoutubeChannels()) {
+        const provider = this._integrationManager.getSocialIntegration('youtube');
+        if (!provider?.fetchPageInformation) continue;
+        let current = channel;
+        try {
+          if (!current.tokenExpiration || current.tokenExpiration.getTime() < Date.now() + 60_000) {
+            const refreshed = await provider.refreshToken(current.refreshToken || '');
+            if (!refreshed?.accessToken) throw new Error('Refresh returned no access token');
+            const saved = await this.updateRefreshedCredentials(current, refreshed.accessToken,
+              refreshed.refreshToken, refreshed.expiresIn);
+            if (!saved.count) continue; // A disconnect or new grant won the race.
+            current = await this.assertActive(current);
+          }
+          const metadata = await this.withActiveIntegration(current, () =>
+            provider.fetchPageInformation!(current.token, { id: current.internalId }));
+          if (metadata.id !== current.internalId) throw new Error('YouTube channel changed');
+          const saved = await this._integrationRepository.updateYoutubeChannelMetadata(current, metadata);
+          // The connection flow copied Google's avatar into local uploads.
+          // Once the live URL is refreshed, erase that obsolete local copy if
+          // nobody else references it; otherwise it would survive in backups.
+          const oldPicture = current.picture;
+          const localPrefix = `${process.env.FRONTEND_URL}/uploads/`;
+          if (saved.count && process.env.STORAGE_PROVIDER !== 'cloudflare' &&
+              oldPicture?.startsWith(localPrefix) &&
+              !await this._integrationRepository.pictureIsShared(oldPicture, current.id)) {
+            const relative = oldPicture.slice(localPrefix.length);
+            if (/^\d{4}\/\d{2}\/\d{2}\/[A-Za-z0-9._-]+$/.test(relative)) {
+              try { await this.storage.removeFile(`${process.env.UPLOAD_DIRECTORY}/${relative}`); }
+              catch { console.error('Old YouTube avatar needs file cleanup', current.id); }
+            }
+          }
+        } catch {
+          let lastGood = channel.authorizedAt || channel.createdAt;
+          try {
+            const stored = JSON.parse(channel.customInstanceDetails || '{}');
+            if (typeof stored.youtubeDataRefreshedAt === 'string') {
+              const parsed = new Date(stored.youtubeDataRefreshedAt);
+              if (!Number.isNaN(parsed.getTime())) lastGood = parsed;
+            }
+          } catch { /* Treat invalid metadata as stale. */ }
+          if (lastGood.getTime() <= Date.now() - 29 * 24 * 60 * 60 * 1000) {
+            try { await this.deleteChannel(channel.organizationId, channel.id); }
+            catch { console.error('Stale YouTube channel requires removal review', channel.id); }
+          } else {
+            console.error('YouTube channel data refresh failed; retry tomorrow', channel.id);
+          }
+        }
+      }
+    } finally {
+      await ioRedis.del(lock);
+    }
+  }
+
   async disableChannel(org: string, id: string) {
     return this._integrationRepository.disableChannel(org, id);
   }

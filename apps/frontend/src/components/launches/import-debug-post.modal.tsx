@@ -8,6 +8,7 @@ import { Button } from '@gitroom/react/form/button';
 import { useIntegrationList } from '@gitroom/frontend/components/launches/helpers/use.integration.list';
 import { useSWRConfig } from 'swr';
 import clsx from 'clsx';
+import { YoutubeBrandIcon } from '@gitroom/frontend/components/ui/youtube.brand.icon';
 
 interface DebugPostData {
   type: string;
@@ -229,11 +230,13 @@ export const ImportDebugPostModal: FC<{ close: () => void }> = ({ close }) => {
                     <div className="text-[13px] text-textColor">
                       {integration.name}
                     </div>
-                    <img
-                      src={`/icons/platforms/${integration.identifier}.png`}
-                      className="w-[14px] h-[14px] rounded-[4px] ml-auto"
-                      alt={integration.identifier}
-                    />
+                    {integration.identifier === 'youtube' ? (
+                      <YoutubeBrandIcon className="ml-auto" />
+                    ) : (
+                      <img src={`/icons/platforms/${integration.identifier}.png`}
+                        className="w-[14px] h-[14px] rounded-[4px] ml-auto"
+                        alt={integration.identifier} />
+                    )}
                   </div>
                 ))}
               </div>

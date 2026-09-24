@@ -552,6 +552,7 @@ export const Editor: FC<{
     setImages,
     num,
     identifier,
+    selectedIntegration,
     appendImages,
     dummy,
     chars,
@@ -714,6 +715,9 @@ export const Editor: FC<{
               {t('drop_files_here_to_upload', 'Drop your files here to upload')}
             </div>
             <div className="px-[10px] pt-[10px] bg-newBgColorInner rounded-t-[6px] relative z-[99]">
+              {(identifier === 'youtube' || (identifier === 'global' && selectedIntegration.length === 1 && selectedIntegration[0]?.integration.identifier === 'youtube')) && num === 0 && (
+                <div className="mb-[8px] text-[14px] font-[600]">YouTube video description</div>
+              )}
               <OnlyEditor
                 value={props.value}
                 editorType={editorType}

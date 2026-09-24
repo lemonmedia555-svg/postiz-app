@@ -43,6 +43,9 @@ const YoutubeSettings: FC = () => {
   return (
     <div className="flex flex-col">
       <Input label="Title" {...register('title')} maxLength={100} />
+      <p className="mt-[12px] mb-[12px] text-[13px] text-[#B9B9B9]">
+        Description: the text in the main post editor is sent to YouTube as the video description. Close Settings to edit it.
+      </p>
       <Select
         label="Visibility"
         {...register('type', {
