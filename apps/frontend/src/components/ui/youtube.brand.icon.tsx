@@ -12,5 +12,5 @@ export const YoutubeBrandIcon: FC<{ className?: string; href?: string }> = ({ cl
     height={42}
     className={clsx('block h-[42px] w-[48px] max-w-none shrink-0 object-contain', !href && className)}
   />;
-  return href ? <a href={href} className={className} aria-label="Open YouTube" target="_blank" rel="noopener noreferrer">{icon}</a> : icon;
+  return href ? <a href={href} className={className} aria-label="Open YouTube" target="_blank" rel="noopener noreferrer" onClick={(event) => event.stopPropagation()}>{icon}</a> : icon;
 };
