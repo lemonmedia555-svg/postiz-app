@@ -116,7 +116,7 @@ export const ManageModal: FC<AddEditModalProps> = (props) => {
       <div className="flex items-center gap-[10px]">
         <div className="relative">
           {currentIntegration.identifier === 'youtube' ? (
-            <YoutubeBrandIcon />
+            <YoutubeBrandIcon href="https://www.youtube.com/" />
           ) : (
             <img src={`/icons/platforms/${currentIntegration.identifier}.png`}
               className="w-[20px] h-[20px] rounded-[4px]" alt={currentIntegration.identifier} />

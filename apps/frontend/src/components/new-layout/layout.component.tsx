@@ -43,6 +43,8 @@ import { AttachToFeedbackIcon } from '@gitroom/frontend/components/new-layout/se
 import { FirstBillingComponent } from '@gitroom/frontend/components/billing/first.billing.component';
 import { TrialTracker } from '@gitroom/frontend/components/layout/gtm.component';
 import { setSentryUser } from '@gitroom/react/sentry/initialize.sentry.client';
+import useCookie from 'react-use-cookie';
+import { cookieName, fallbackLng } from '@gitroom/react/translation/i18n.config';
 
 const jakartaSans = Plus_Jakarta_Sans({
   weight: ['600', '500', '700'],
@@ -52,6 +54,8 @@ const jakartaSans = Plus_Jakarta_Sans({
 
 export const LayoutComponent = ({ children }: { children: ReactNode }) => {
   const fetch = useFetch();
+  const [language] = useCookie(cookieName, fallbackLng);
+  const legalPrefix = language === 'ru' ? '' : '/en';
 
   const { backendUrl, billingEnabled, isGeneral } = useVariables();
 
@@ -149,9 +153,9 @@ export const LayoutComponent = ({ children }: { children: ReactNode }) => {
                 </>
               )}
               <div className="flex flex-wrap gap-x-[16px] gap-y-[4px] px-[20px] py-[8px] text-[11px] text-textItemBlur">
-                <a href="https://creatu.io/privacy/" target="_blank" rel="noopener noreferrer" className="hover:underline">Privacy</a>
-                <a href="https://creatu.io/terms/" target="_blank" rel="noopener noreferrer" className="hover:underline">Terms</a>
-                <a href="https://creatu.io/data-deletion/" target="_blank" rel="noopener noreferrer" className="hover:underline">Data deletion</a>
+                <a href={`https://creatu.io${legalPrefix}/privacy/`} target="_blank" rel="noopener noreferrer" className="hover:underline">Privacy</a>
+                <a href={`https://creatu.io${legalPrefix}/terms/`} target="_blank" rel="noopener noreferrer" className="hover:underline">Terms</a>
+                <a href={`https://creatu.io${legalPrefix}/data-deletion/`} target="_blank" rel="noopener noreferrer" className="hover:underline">Data deletion</a>
                 <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener noreferrer" className="hover:underline">YouTube Terms</a>
                 <a href="https://policies.google.com/privacy" target="_blank" rel="noopener noreferrer" className="hover:underline">Google Privacy</a>
               </div>

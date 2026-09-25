@@ -131,7 +131,7 @@ export default async function Auth(
                         ? 'absolute -end-[14px] -bottom-[8px] z-[20]'
                         : 'absolute -end-[5px] -bottom-[5px] w-[30px] h-[30px] z-[20]'}>
                         {post[0].integration.providerIdentifier === 'youtube' ? (
-                          <YoutubeBrandIcon />
+                          <YoutubeBrandIcon href="https://www.youtube.com/" />
                         ) : (
                           <img className="w-full h-full bg-black aspect-square rounded-full border-tableBorder"
                             alt={post[0].integration.providerIdentifier}

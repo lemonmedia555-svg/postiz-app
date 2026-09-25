@@ -17,9 +17,9 @@ export default async function AuthLayout({
           <LogoTextComponent />
           <div className="flex">{children}</div>
           <nav aria-label="Creatu policies" className="flex flex-wrap gap-x-[14px] gap-y-[6px] text-[12px] text-[#B9B9B9]">
-            <a className="underline hover:text-white" href="https://creatu.io/privacy/">Privacy</a>
-            <a className="underline hover:text-white" href="https://creatu.io/terms/">Terms</a>
-            <a className="underline hover:text-white" href="https://creatu.io/data-deletion/">Data deletion</a>
+            <a className="underline hover:text-white" href="https://creatu.io/en/privacy/">Privacy</a>
+            <a className="underline hover:text-white" href="https://creatu.io/en/terms/">Terms</a>
+            <a className="underline hover:text-white" href="https://creatu.io/en/data-deletion/">Data deletion</a>
           </nav>
         </div>
       </div>

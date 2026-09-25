@@ -74,7 +74,7 @@ export const GeneralPreviewComponent: FC<{
                 />
 
                 {current !== 'global' && (integration?.identifier === 'youtube' ? (
-                  <YoutubeBrandIcon className="absolute z-10 -bottom-[9px] -end-[8px]" />
+                  <YoutubeBrandIcon href="https://www.youtube.com/" className="absolute z-10 -bottom-[9px] -end-[8px]" />
                 ) : (
                   <SafeImage src={`/icons/platforms/${integration?.identifier}.png`}
                     className="min-w-[20px] min-h-[20px] rounded-full absolute z-10 -bottom-[5px] -end-[5px] border border-fifth"

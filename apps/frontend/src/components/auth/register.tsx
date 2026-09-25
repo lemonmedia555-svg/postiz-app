@@ -24,6 +24,7 @@ import dynamic from 'next/dynamic';
 import { WalletUiProvider } from '@gitroom/frontend/components/auth/providers/placeholder/wallet.ui.provider';
 import { useT } from '@gitroom/react/translation/get.transation.service.client';
 import useCookie from 'react-use-cookie';
+import { cookieName, fallbackLng } from '@gitroom/react/translation/i18n.config';
 const WalletProvider = dynamic(
   () => import('@gitroom/frontend/components/auth/providers/wallet.provider'),
   {
@@ -104,6 +105,8 @@ export function RegisterAfter({
   const fireEvents = useFireEvents();
   const track = useTrack();
   const [datafast_visitor_id] = useCookie('datafast_visitor_id');
+  const [language] = useCookie(cookieName, fallbackLng);
+  const legalPrefix = language === 'ru' ? '' : '/en';
   const isAfterProvider = useMemo(() => {
     return !!token && !!provider;
   }, [token, provider]);
@@ -228,7 +231,7 @@ export function RegisterAfter({
                 )}
                 &nbsp;
                 <a
-                  href="https://creatu.io/terms/"
+                  href={`https://creatu.io${legalPrefix}/terms/`}
                   className="underline hover:font-bold"
                   rel="nofollow"
                 >
@@ -237,7 +240,7 @@ export function RegisterAfter({
                 &nbsp;
                 {t('and', 'and')}&nbsp;
                 <a
-                  href="https://creatu.io/privacy/"
+                  href={`https://creatu.io${legalPrefix}/privacy/`}
                   rel="nofollow"
                   className="underline hover:font-bold"
                 >

@@ -226,7 +226,7 @@ export const InformationComponent: FC<{
                 <Fragment key={p.integration.id}>
                   <div>
                     {p.integration.identifier === 'youtube' ? (
-                      <YoutubeBrandIcon />
+                      <YoutubeBrandIcon href="https://www.youtube.com/" />
                     ) : (
                       <SafeImage src={`/icons/platforms/${p.integration.identifier}.png`}
                         alt={p.integration.name}
